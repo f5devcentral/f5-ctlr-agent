@@ -1,0 +1,7 @@
+# .coveragerc to control coverage.py for build
+
+[run]
+omit =
+  */tests/*
+
+data_file = ./f5_ctlr_agent/python-coverage.out
