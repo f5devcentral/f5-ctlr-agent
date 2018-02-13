@@ -1,0 +1,12 @@
+{
+    "ltm": {
+        "iRules": [],
+        "iapps": [],
+        "internalDataGroups": [],
+        "l7Policies": [],
+        "monitors": [],
+        "pools": [],
+        "virtualServers": []
+    },
+    "network": {}
+}

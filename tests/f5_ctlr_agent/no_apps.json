@@ -1,0 +1,13 @@
+{
+    "resources": {
+        "k8s": {
+            "iRules": [],
+            "iapps": [],
+            "internalDataGroups": [],
+            "l7Policies": [],
+            "monitors": [],
+            "pools": [],
+            "virtualServers": []
+        }
+    }
+}
