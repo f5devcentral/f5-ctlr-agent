@@ -21,11 +21,18 @@ from setuptools import find_packages
 
 import f5_ctlr_agent
 
-install_requirements = map(
-    lambda x: str(x.req), parse_reqs('./requirements.txt', session='setup')
-)
+# NOTE: This package needs to be installed with pip --process-dependency-links
 
-print('install requirements', install_requirements)
+install_reqs = []
+install_links = []
+install_gen = parse_reqs('./requirements.txt', session='setup')
+
+for req in install_gen:
+    install_reqs.append(str(req.req))
+    if req.link is not None:
+        install_links.append(str(req.link) + '-0')
+
+print('install requirements', install_reqs)
 setup(
     name='f5-ctlr-agent',
     description='F5 Networks Controller Agent',
@@ -35,9 +42,7 @@ setup(
     url='https://github.com/f5devcentral/f5-ctlr-agent',
     keywords=['F5', 'big-ip'],
     scripts=['f5_ctlr_agent/bigipconfigdriver.py'],
-    dependency_links=[
-        'git+https://github.com/f5devcentral/f5-cccl.git@d55c2d24b03a50ecd71803501ea2db1dfed5efb5#egg=f5-cccl'
-    ],
-    install_requires=['f5-cccl']+install_requirements,
+    dependency_links=install_links,
+    install_requires=install_reqs,
     packages=find_packages(exclude=['*test', '*.test.*', 'test*', 'test']),
 )

@@ -6,6 +6,7 @@ Add f5-ctlr-agent to the `requirements.txt` file for your project. Use [editable
 ```
 [-e] git+https://git.myproject.org/MyProject#egg=MyProject
 ```
+To install in your project run `pip install --process-dependency-links -r requirements.txt`.
 
 # Filing Issues
 
