@@ -68,7 +68,8 @@ root_logger.addFilter(KeyFilter())
 
 DEFAULT_LOG_LEVEL = logging.INFO
 DEFAULT_VERIFY_INTERVAL = 30.0
-NET_SCHEMA = '/app/src/f5-cccl/f5_cccl/schemas/cccl-net-api-schema.yml'
+NET_SCHEMA = '/usr/local/lib/python2.7/site-packages/f5_cccl/schemas/' + \
+    'cccl-net-api-schema.yml'
 
 
 class CloudServiceManager():
