@@ -727,7 +727,8 @@ def _handle_vxlan_config(config):
 
 def _set_user_agent(prefix):
     try:
-        with open('/app/VERSION_BUILD.json', 'r') as version_file:
+        with open('/app/vendor/src/f5/VERSION_BUILD.json', 'r') \
+                as version_file:
             data = json.load(version_file)
             user_agent = \
                 prefix + "-bigip-ctlr-" + data['version'] + '-' + data['build']
