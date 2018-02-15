@@ -68,7 +68,8 @@ root_logger.addFilter(KeyFilter())
 
 DEFAULT_LOG_LEVEL = logging.INFO
 DEFAULT_VERIFY_INTERVAL = 30.0
-NET_SCHEMA = '/app/src/f5-cccl/f5_cccl/schemas/cccl-net-api-schema.yml'
+NET_SCHEMA = '/usr/local/lib/python2.7/site-packages/f5_cccl/schemas/' + \
+    'cccl-net-api-schema.yml'
 
 
 class CloudServiceManager():
@@ -727,7 +728,8 @@ def _handle_vxlan_config(config):
 
 def _set_user_agent(prefix):
     try:
-        with open('/app/python/VERSION_BUILD.json', 'r') as version_file:
+        with open('/app/vendor/src/f5/VERSION_BUILD.json', 'r') \
+                as version_file:
             data = json.load(version_file)
             user_agent = \
                 prefix + "-bigip-ctlr-" + data['version'] + '-' + data['build']
