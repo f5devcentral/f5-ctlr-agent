@@ -25,7 +25,7 @@ import f5_ctlr_agent
 
 install_reqs = []
 install_links = []
-install_gen = parse_reqs('./requirements.txt', session='setup')
+install_gen = parse_reqs('./agent-runtime-requirements.txt', session='setup')
 
 for req in install_gen:
     install_reqs.append(str(req.req))
