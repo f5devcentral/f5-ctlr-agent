@@ -68,8 +68,7 @@ root_logger.addFilter(KeyFilter())
 
 DEFAULT_LOG_LEVEL = logging.INFO
 DEFAULT_VERIFY_INTERVAL = 30.0
-NET_SCHEMA = '/usr/local/lib/python2.7/site-packages/f5_cccl/schemas/' + \
-    'cccl-net-api-schema.yml'
+NET_SCHEMA_NAME = 'cccl-net-api-schema.yml'
 
 
 class CloudServiceManager():
@@ -761,6 +760,16 @@ def _retry_backoff(cb):
         elapsed += RETRY_INTERVAL
 
 
+def _find_net_schema():
+    paths = [path for path in sys.path if 'site-packages' in path]
+    for path in paths:
+        for root, dirs, files in os.walk(path):
+            if NET_SCHEMA_NAME in files:
+                return os.path.join(root, NET_SCHEMA_NAME)
+    log.Error('Could not find CCCL schema: {}'.format(NET_SCHEMA_NAME))
+    return ''
+
+
 def main():
     try:
         args = _handle_args()
@@ -807,7 +816,7 @@ def main():
                 vxlan_partition,
                 user_agent=user_agent,
                 prefix=args.ctlr_prefix,
-                schema_path=NET_SCHEMA)
+                schema_path=_find_net_schema())
             managers.append(manager)
 
         handler = ConfigHandler(args.config_file,
