@@ -230,31 +230,26 @@ def create_network_config(config):
 def _create_custom_profiles(mgmt, partition, custom_profiles):
     incomplete = 0
 
-    customProfiles = False
-
     # Server profiles may reference a CA cert in another server profile.
     # These need to be loaded first.
     for profile in custom_profiles:
         caFile = profile.get('caFile', '')
         if profile['context'] == 'serverside' and caFile == "self":
             incomplete += create_server_ssl_profile(mgmt, partition, profile)
-            customProfiles = True
 
     for profile in custom_profiles:
         if profile['context'] == 'clientside':
             incomplete += create_client_ssl_profile(mgmt, partition, profile)
-            customProfiles = True
         elif profile['context'] == 'serverside':
             caFile = profile.get('caFile', '')
             if caFile != "self":
                 incomplete += create_server_ssl_profile(
                     mgmt, partition, profile)
-                customProfiles = True
         else:
             log.error(
                 "Only client or server custom profiles are supported.")
 
-    return customProfiles, incomplete
+    return incomplete
 
 
 def _delete_unused_ssl_profiles(mgmt, partition, config):
@@ -372,11 +367,6 @@ class ConfigHandler():
             self._interval.stop()
 
     def _update_cccl(self, config):
-        # customProfiles is true when we've written out a custom profile.
-        # Once we know we've written out a profile, we can call delete
-        # if needed.
-        customProfiles = False
-
         _handle_vxlan_config(config)
         cfg_net = create_network_config(config)
         incomplete = 0
@@ -389,7 +379,7 @@ class ConfigHandler():
                 if 'customProfiles' in cfg_ltm and \
                         mgr.get_schema_type() == 'ltm':
                     tmp = 0
-                    customProfiles, tmp = _create_custom_profiles(
+                    tmp = _create_custom_profiles(
                         mgr.mgmt_root(),
                         partition,
                         cfg_ltm['customProfiles'])
@@ -403,8 +393,7 @@ class ConfigHandler():
                     incomplete += mgr._apply_ltm_config(cfg_ltm)
 
                 # Manually delete custom profiles (if needed)
-                if customProfiles and \
-                        mgr.get_schema_type() == 'ltm':
+                if mgr.get_schema_type() == 'ltm':
                     _delete_unused_ssl_profiles(
                         mgr.mgmt_root(),
                         partition,
