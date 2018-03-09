@@ -24,7 +24,7 @@ This project is used internally by other F5 projects; we're not yet ready to acc
 
 # Copyright
 
-Copyright 2018 F5 Networks Inc.
+Copyright (c) 2018, F5 Networks, Inc.
 
 # License
 
