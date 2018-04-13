@@ -120,6 +120,10 @@ class CloudServiceManager():
         """Apply the net configuration to the BIG-IP."""
         return self._cccl.apply_net_config(config)
 
+    def get_proxy(self):
+        """Called from 'CCCL' delete_unused_ssl_profiles"""
+        return self._cccl.get_proxy()
+
 
 class IntervalTimerError(Exception):
     def __init__(self, msg):
@@ -252,8 +256,8 @@ def _create_custom_profiles(mgmt, partition, custom_profiles):
     return incomplete
 
 
-def _delete_unused_ssl_profiles(mgmt, partition, config):
-    return delete_unused_ssl_profiles(mgmt, partition, config)
+def _delete_unused_ssl_profiles(mgr, partition, config):
+    return delete_unused_ssl_profiles(mgr, partition, config)
 
 
 class ConfigHandler():
@@ -395,7 +399,7 @@ class ConfigHandler():
                 # Manually delete custom profiles (if needed)
                 if mgr.get_schema_type() == 'ltm':
                     _delete_unused_ssl_profiles(
-                        mgr.mgmt_root(),
+                        mgr,
                         partition,
                         cfg_ltm)
 
