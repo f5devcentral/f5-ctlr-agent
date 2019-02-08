@@ -759,7 +759,10 @@ def _find_net_schema():
         for root, dirs, files in os.walk(path):
             if NET_SCHEMA_NAME in files:
                 return os.path.join(root, NET_SCHEMA_NAME)
-    log.Error('Could not find CCCL schema: {}'.format(NET_SCHEMA_NAME))
+    for root, dirs, files in os.walk('/app/src/f5-cccl'):
+        if NET_SCHEMA_NAME in files:
+            return os.path.join(root, NET_SCHEMA_NAME)
+    log.info('Could not find CCCL schema: {}'.format(NET_SCHEMA_NAME))
     return ''
 
 
