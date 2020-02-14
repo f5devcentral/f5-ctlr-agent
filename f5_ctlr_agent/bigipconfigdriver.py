@@ -13,7 +13,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-from __future__ import absolute_import
+
 
 import argparse
 import fcntl
@@ -30,7 +30,7 @@ import traceback
 
 import pyinotify
 
-from urlparse import urlparse
+from urllib.parse import urlparse
 from f5_cccl.api import F5CloudServiceManager
 from f5_cccl.exceptions import F5CcclError
 from f5_cccl.utils.mgmt import mgmt_root
@@ -790,7 +790,7 @@ def main():
                 if log_success:
                     log.info('BIG-IP connection established.')
                 return (True, bigip)
-            except Exception, e:
+            except Exception as e:
                 return (False, 'BIG-IP connection error: {}'.format(e))
         bigip = _retry_backoff(_bigip_connect_cb)
 
