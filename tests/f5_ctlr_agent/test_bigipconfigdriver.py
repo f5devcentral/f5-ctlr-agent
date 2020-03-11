@@ -13,7 +13,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-from __future__ import absolute_import
+
 
 from copy import deepcopy
 import json
@@ -66,7 +66,7 @@ _cloud_config = {
     },
     'global': {
         'verify-interval': 0.25,
-        'log-level': u'INFO'
+        'log-level': 'INFO'
     }
 }
 
@@ -106,7 +106,7 @@ _expected_bigip_config = {
             },
             'pool': {
                 'monitor': None,
-                'loadBalancingMode': u'round-robin'
+                'loadBalancingMode': 'round-robin'
             }
         }
     }

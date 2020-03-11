@@ -34,7 +34,7 @@ for req in install_gen:
     if req.link is not None:
         install_links.append(str(req.link) + '-0')
 
-print('install requirements', install_reqs)
+print(('install requirements', install_reqs))
 setup(
     name='f5-ctlr-agent',
     description='F5 Networks Controller Agent',

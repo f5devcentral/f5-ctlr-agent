@@ -17,7 +17,7 @@
 Units tests for testing BIG-IP resource management.
 
 """
-from __future__ import absolute_import
+
 
 import unittest
 import json
