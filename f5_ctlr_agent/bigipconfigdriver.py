@@ -316,9 +316,11 @@ class ConfigHandler():
                 incomplete = 0
                 try:
                     config = _parse_config(self._config_file)
+                    # If LTM is not disabled and
                     # No 'resources' indicates that the controller is not
                     # yet ready -- it does not mean to apply an empty config
-                    if 'resources' not in config:
+                    if not _is_ltm_disabled(config) and \
+                            'resources' not in config:
                         continue
                     incomplete = self._update_cccl(config)
                 except ValueError:
@@ -766,6 +768,13 @@ def _find_net_schema():
     return ''
 
 
+def _is_ltm_disabled(config):
+    try:
+        return config['global']['disable-ltm']
+    except KeyError:
+        return False
+
+
 def main():
     try:
         args = _handle_args()
@@ -798,13 +807,14 @@ def main():
         user_agent = _set_user_agent(args.ctlr_prefix)
 
         managers = []
-        for partition in config['bigip']['partitions']:
-            # Management for the BIG-IP partitions
-            manager = CloudServiceManager(
-                bigip,
-                partition,
-                user_agent=user_agent)
-            managers.append(manager)
+        if not _is_ltm_disabled(config):
+            for partition in config['bigip']['partitions']:
+                # Management for the BIG-IP partitions
+                manager = CloudServiceManager(
+                    bigip,
+                    partition,
+                    user_agent=user_agent)
+                managers.append(manager)
         if vxlan_partition:
             # Management for net resources (VXLAN)
             manager = CloudServiceManager(
