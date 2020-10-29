@@ -38,6 +38,8 @@ from f5_cccl.utils.profile import (delete_unused_ssl_profiles,
                                    create_client_ssl_profile,
                                    create_server_ssl_profile)
 
+from f5.bigip import ManagementRoot
+
 log = logging.getLogger(__name__)
 console = logging.StreamHandler()
 console.setFormatter(
@@ -82,16 +84,29 @@ class CloudServiceManager():
     """
 
     def __init__(self, bigip, partition, user_agent=None, prefix=None,
-                 schema_path=None):
+                 schema_path=None,gtm=False):
         """Initialize the CloudServiceManager object."""
         self._mgmt_root = bigip
         self._schema = schema_path
-        self._cccl = F5CloudServiceManager(
-            bigip,
-            partition,
-            user_agent=user_agent,
-            prefix=prefix,
-            schema_path=schema_path)
+        self._is_gtm = gtm
+        if gtm:
+            self._gtm = GTMManager(
+                bigip,
+                partition,
+                user_agent=user_agent)
+            self._cccl=None
+        else:
+            self._cccl = F5CloudServiceManager(
+                bigip,
+                partition,
+                user_agent=user_agent,
+                prefix=prefix,
+                schema_path=schema_path)
+            self._gtm=None
+
+    def is_gtm(self):
+        """ Return is gtm config"""
+        return self._is_gtm
 
     def mgmt_root(self):
         """ Return the BIG-IP ManagementRoot object"""
@@ -213,6 +228,17 @@ def create_ltm_config(partition, config):
 
     return ltm
 
+def get_gtm_config(partition, config):
+    """Extract a BIG-IP configuration from the GTM configuration.
+
+    Args:
+        config: BigIP config
+    """
+    gtm = {}
+    if 'gtm' in config:
+        gtm = config['gtm']
+
+    return gtm
 
 def create_network_config(config):
     """Extract a BIG-IP Network configuration from the network config.
@@ -333,7 +359,22 @@ class ConfigHandler():
                     log.exception('Unexpected error')
                     incomplete = 1
 
-                if incomplete:
+                gtmIncomplete = 0
+                try:
+                    log.debug("---------------------------------------")
+                    config = _parse_config(self._config_file)
+                    gtmIncomplete=self._update_gtm(config)
+                except ValueError:
+                    gtmIncomplete += 1
+                    formatted_lines = traceback.format_exc().splitlines()
+                    last_line = formatted_lines[-1]
+                    log.error('Failed to process the config file {} ({})'
+                              .format(self._config_file, last_line))
+                except Exception:
+                    log.exception('Unexpected error')
+                    gtmIncomplete = 1
+
+                if incomplete|gtmIncomplete:
                     # Error occurred, perform retries
                     self.handle_backoff()
                 else:
@@ -372,11 +413,31 @@ class ConfigHandler():
         if self._interval:
             self._interval.stop()
 
+    def _update_gtm(self, config):
+        gtmIncomplete=0
+        for mgr in self._managers:
+            if mgr.is_gtm():
+                partition = mgr._gtm.get_partition()
+                try:
+                    cfg_gtm=get_gtm_config(partition,config)
+                    if partition in cfg_gtm:
+                        mgr._gtm.create_gtm(
+                                partition,
+                                cfg_gtm)
+                except F5CcclError as e:
+                    # We created an invalid configuration, raise the
+                    # exception and fail
+                    log.error("GTM Error.....:%s",e.msg)
+                    gtmIncomplete += 1
+        return gtmIncomplete
+
     def _update_cccl(self, config):
         _handle_vxlan_config(config)
         cfg_net = create_network_config(config)
         incomplete = 0
         for mgr in self._managers:
+            if mgr.is_gtm():
+                continue
             partition = mgr.get_partition()
             cfg_ltm = create_ltm_config(partition, config)
             try:
@@ -588,6 +649,199 @@ class ConfigWatcher(pyinotify.ProcessEvent):
                 self._config_stats = sha
                 self._on_change()
 
+class GTMManager(object):
+    """F5 Common Controller Cloud Service Management.
+
+    The F5 Common Controller Core Library (CCCL) is an orchestration package
+    that provides a declarative API for defining BIG-IP LTM and NET services
+    in diverse environments (e.g. Marathon, Kubernetes, OpenStack). The
+    API will allow a user to create proxy services by specifying the:
+    virtual servers, pools, L7 policy and rules, monitors, arps, or fdbTunnels
+    as a service description object.  Each instance of the CCCL is initialized
+    with namespace qualifiers to allow it to uniquely identify the resources
+    under its control.
+    """
+
+    def __init__(self, bigip, partition, user_agent=None):
+        """Initialize an instance of the F5 CCCL service manager.
+
+        :param bigip: BIG-IP management root.
+        :param partition: Name of BIG-IP partition to manage.
+        :param user_agent: String to append to the User-Agent header for
+        iControl REST requests (default: None)
+        :param prefix:  The prefix assigned to resources that should be
+        managed by this CCCL instance.  This is prepended to the
+        resource name (default: None)
+        :param schema_path: User defined schema (default: from package)
+        """
+        log.debug("F5GTMManager initialize")
+
+        # Set user-agent for ICR session
+        if user_agent is not None:
+            bigip.icrs.append_user_agent(user_agent)
+        self._user_agent = user_agent
+        self._mgmt_root = bigip
+        self._partition = partition
+
+    def mgmt_root(self):
+        """ Return the BIG-IP ManagementRoot object"""
+        return self._mgmt_root
+
+    def get_partition(self):
+        """ Return the managed partition."""
+        return self._partition
+
+    def create_gtm(self, partition, gtmConfig):
+        """ Create GTM object in BIG-IP """
+        mgmt = self.mgmt_root()
+        gtm=mgmt.tm.gtm
+
+        if "wideIPs" in gtmConfig[partition]:
+            for config in gtmConfig[partition]['wideIPs']:
+                monitor = ""
+                newPools = dict()
+                for pool in config['pools']:
+                    #Pool object
+                    newPools[pool['name']]= {
+                        'name': pool['name'], 'partition': partition, 'ratio': 1
+                        }
+                    if "monitor" in pool:
+                        #Create Health Monitor
+                        monitor = pool['monitor']['name']
+                        self.create_HM(gtm, partition, pool['monitor'])
+                #Create GTM pool
+                self.create_gtm_pool(gtm, partition, config, monitor)
+                #Create Wideip
+                self.create_wideip(gtm, partition, config,newPools)
+                #Attach pool to wideip
+                # self.attach_gtm_pool_to_wideip(
+                # gtm, config['name'], partition, obj)
+
+    def create_wideip(self, gtm, partition, config,newPools):
+        """ Create wideip and returns the wideip object """
+        exist=gtm.wideips.a_s.a.exists(name=config['name'], partition=partition)
+        if not exist:
+            log.info('GTM: Creating wideip {}'.format(config['name']))
+            gtm.wideips.a_s.a.create(
+                name=config['name'],
+                partition=partition)
+            #Attach pool to wideip
+            self.attach_gtm_pool_to_wideip(gtm,config['name'],partition,list(newPools.values()))
+        else:
+            wideip = gtm.wideips.a_s.a.load(
+                name=config['name'],
+                partition=partition)
+            duplicatePools = []
+            if hasattr(wideip,'pools'):
+                for p in newPools.keys():
+                    if hasattr(wideip.raw['pools'],p):
+                        duplicatePools.append(p)
+            
+            for poolName in duplicatePools:
+                del newPools[poolName]
+
+            if len(newPools)>0:
+                self.attach_gtm_pool_to_wideip(
+                    gtm,
+                    config['name'],
+                    partition,
+                    list(newPools.values()))
+
+
+    def create_gtm_pool(self, gtm, partition, config, monitorName):
+        """ Create gtm pools """
+        for pool in config['pools']:
+            exist=gtm.pools.a_s.a.exists(name=pool['name'], partition=partition)
+            pl = {}
+            if not exist:
+                #Create pool object
+                log.info('GTM: Creating Pool: {}'.format(pool['name']))
+                if not monitorName:
+                    pl=gtm.pools.a_s.a.create(
+                    name=pool['name'],
+                    partition=partition)
+                else:
+                    pl=gtm.pools.a_s.a.create(
+                        name=pool['name'],
+                        partition=partition,
+                        monitor="/"+partition+"/"+monitorName)
+            if bool(pool['members']):
+                for member in pool['members']:
+                    #Add member to pool
+                    self.adding_member_to_gtm_pool(
+                        gtm, pl, pool['name'], member, partition)
+
+    def attach_gtm_pool_to_wideip(self, gtm, name, partition, poolObj):
+        """ Attach gtm pool to the wideip """
+        #wideip.raw['pools'] =
+        #[{'name': 'api-pool1', 'partition': 'test', 'order': 2, 'ratio': 1}]
+        wideip = gtm.wideips.a_s.a.load(name=name,partition=partition)
+        if hasattr(wideip,'pools'):
+            wideip.pools.extend(poolObj)
+            log.info('GTM: Attaching Pool: {} to wideip {}'.format(poolObj,name))
+            wideip.update()
+        else:
+            wideip.raw['pools'] = poolObj
+            log.info('GTM: Attaching Pool: {} to wideip {}'.format(poolObj,name))
+            wideip.update()
+
+    def adding_member_to_gtm_pool(self,gtm,pool,poolName,memberName,partition):
+        """ Add member to gtm pool """
+        try:
+            if not bool(pool):
+                pool = gtm.pools.a_s.a.load(name=poolName,partition=partition)
+            exist = pool.members_s.member.exists(
+                name=memberName)
+            if not exist:
+                s = memberName.split(":")
+                server = s[0].split("/")[-1]
+                vs_name = s[1]
+                serverExist = gtm.servers.server.exists(name=server)
+                if serverExist:
+                    sl = gtm.servers.server.load(name=server)
+                    vsExist = sl.virtual_servers_s.virtual_server.exists(
+                        name=vs_name)
+                    if vsExist:
+                        pmExist=pool.members_s.member.exists(
+                            name=memberName,
+                            partition="Common")
+                        if not pmExist:
+                            #Add member to gtm pool created
+                            log.info('GTM: Adding pool member {} to pool {}'.format(
+                                memberName,poolName))
+                            pool.members_s.member.create(
+                                name = memberName,
+                                partition = "Common")
+        except (AttributeError):
+            log.debug("Error while adding member to pool.")
+
+    def create_HM(self, gtm, partition, monitor):
+        """ Create Health Monitor """
+        if monitor['type']=="http":
+            exist=gtm.monitor.https.http.exists(
+                name=monitor['name'],
+                partition=partition)
+        if monitor['type']=="https":
+            exist=gtm.monitor.https_s.https.exists(
+                name=monitor['name'],
+                partition=partition)
+        if not exist:
+            if monitor['type']=="http":
+                gtm.monitor.https.http.create(
+                    name=monitor['name'],
+                    partition=partition,
+                    send=monitor['send'],
+                    recv=monitor['recv'],
+                    interval=monitor['interval'],
+                    timeout=monitor['timeout'])
+            if monitor['type']=="https":
+                gtm.monitor.https_s.https.create(
+                    name=monitor['name'],
+                    partition=partition,
+                    send=monitor['send'],
+                    recv=monitor['recv'],
+                    interval=monitor['interval'],
+                    timeout=monitor['timeout'])
 
 def _parse_config(config_file):
     def _file_exist_cb(log_success):
@@ -774,6 +1028,12 @@ def _is_ltm_disabled(config):
     except KeyError:
         return False
 
+def _is_gtm_config(config):
+    try:
+        return config['global']['gtm']
+    except KeyError:
+        return False
+
 
 def main():
     try:
@@ -824,6 +1084,15 @@ def main():
                 prefix=args.ctlr_prefix,
                 schema_path=_find_net_schema())
             managers.append(manager)
+        if _is_gtm_config(config):
+            for partition in config['bigip']['partitions']:
+                # Management for the BIG-IP partitions
+                manager = CloudServiceManager(
+                    bigip,
+                    partition,
+                    user_agent=user_agent,
+                    gtm=True)
+                managers.append(manager)
 
         handler = ConfigHandler(args.config_file,
                                 managers,
@@ -847,3 +1116,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
