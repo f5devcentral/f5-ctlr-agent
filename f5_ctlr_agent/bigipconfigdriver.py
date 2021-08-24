@@ -734,15 +734,15 @@ class GTMManager(object):
 
     def handle_operation_delete(self,gtm,partition,oldConfig,opr_config,rev_map):
         """ Handle delete operation """
+        if len(opr_config["monitors"])>0:
+            for monitor in opr_config["monitors"]:
+                poolName=rev_map["monitors"][monitor]
+                self.delete_gtm_hm(gtm,partition,poolName,monitor)
         if len(opr_config["pools"])>0:
             for pool in opr_config["pools"]:
                 wideipForPoolDeleted=rev_map["pools"][pool]
                 for wideip in wideipForPoolDeleted:
                     self.delete_gtm_pool(gtm,partition,oldConfig,wideip,pool)
-        if len(opr_config["monitors"])>0:
-            for monitor in opr_config["monitors"]:
-                poolName=rev_map["monitors"][monitor]
-                self.delete_gtm_hm(gtm,partition,poolName,monitor)
         if len(opr_config["wideIPs"])>0:
             for wideip in opr_config["wideIPs"]:
                 self.delete_gtm_wideip(gtm,partition,oldConfig,wideip)
@@ -1021,7 +1021,7 @@ class GTMManager(object):
                                         partition,
                                         poolName,
                                         member)
-                            if pool['monitor']['name'] is not None:
+                            if hasattr(pool,'monitor') and pool['monitor']['name'] is not None:
                                 self.delete_gtm_hm(gtm,partition,pool['name'],pool['monitor']['name'])
 
                 self.remove_gtm_pool_to_wideip(gtm,
@@ -1056,19 +1056,23 @@ class GTMManager(object):
 
     def delete_gtm_hm(self,gtm,partition,poolName,monitorName):
         """ Delete gtm health monitor """
+        self.remove_monitor_to_gtm_pool(gtm,partition,poolName,monitorName)
         try:
-            self.remove_monitor_to_gtm_pool(gtm,partition,poolName,monitorName)
             obj = gtm.monitor.https_s.https.load(
                             name=monitorName,
                             partition=partition)
             obj.delete()
+            log.info("Deleted the HTTPS Health monitor: {}".format(monitorName))
+        except Exception as e:
+            log.error("Could not delete https health monitor: %s", e)
+        try:
             obj = gtm.monitor.https.http.load(
                             name=monitorName,
                             partition=partition)
             obj.delete()
-            log.info("Deleted the Health monitor: {}".format(monitorName))
+            log.info("Deleted the HTTP Health monitor: {}".format(monitorName))
         except Exception as e:
-            log.error("Could not delete health monitor: %s", e)
+            log.error("Could not delete http health monitor: %s", e)
 
     def process_config(self, d1, d2):
         """ Process old and new config """
