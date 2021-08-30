@@ -730,7 +730,7 @@ class GTMManager(object):
                 if opr=="delete":
                     self.handle_operation_delete(gtm,partition,oldConfig,opr_config[opr],rev_map)
                 if opr=="create" or opr=="update":
-                    self.handle_operation_create(gtm,partition,oldConfig,gtmConfig,opr_config[opr])
+                    self.handle_operation_create(gtm,partition,oldConfig,gtmConfig,opr_config[opr],opr)
 
     def handle_operation_delete(self,gtm,partition,oldConfig,opr_config,rev_map):
         """ Handle delete operation """
@@ -747,7 +747,7 @@ class GTMManager(object):
             for wideip in opr_config["wideIPs"]:
                 self.delete_gtm_wideip(gtm,partition,oldConfig,wideip)
 
-    def handle_operation_create(self,gtm,partition,oldConfig,gtmConfig,opr_config):
+    def handle_operation_create(self,gtm,partition,oldConfig,gtmConfig,opr_config,opr):
         """ Handle create operation """
         if len(opr_config["pools"])>0 or len(opr_config["monitors"])>0 or len(opr_config["wideIPs"])>0:
             if partition in gtmConfig and "wideIPs" in gtmConfig[partition]:
@@ -763,7 +763,11 @@ class GTMManager(object):
                             if "monitor" in pool.keys():
                                 #Create Health Monitor
                                 monitor = pool['monitor']['name']
-                                self.delete_gtm_hm(gtm,partition,pool['name'],pool['monitor']['name'])
+                                if opr=="update":
+                                    if len(opr_config["monitors"])>0:
+                                        for mon in opr_config["monitors"]:
+                                            if monitor==mon:
+                                                self.delete_gtm_hm(gtm,partition,pool['name'],pool['monitor']['name'])
                                 self.create_HM(gtm, partition, pool['monitor'])
                             # Delete the old pool members
                             if partition in oldConfig and "wideIPs" in oldConfig[partition]:
@@ -1037,12 +1041,13 @@ class GTMManager(object):
     def delete_gtm_wideip(self,gtm,partition,oldConfig,wideipName):
         """ Delete gtm wideip """
         try:
-            if oldConfig[partition]['wideIPs'] is not None:
-                for wideip in oldConfig[partition]['wideIPs']:
-                    if wideipName==wideip['name']:
-                        for pool in wideip['pools']:
-                            # Fix this multiple loop inside def delete_gtm_pool 
-                            self.delete_gtm_pool(gtm,partition,oldConfig,wideipName,pool['name'])
+            # As pool is deleted as part of delete_gtm_pool
+            # if oldConfig[partition]['wideIPs'] is not None:
+            #     for wideip in oldConfig[partition]['wideIPs']:
+            #         if wideipName==wideip['name']:
+            #             for pool in wideip['pools']:
+            #                 # Fix this multiple loop inside def delete_gtm_pool 
+            #                 self.delete_gtm_pool(gtm,partition,oldConfig,wideipName,pool['name'])
             obj = gtm.wideips.a_s.a.load(
                     name=wideipName,
                     partition=partition)
