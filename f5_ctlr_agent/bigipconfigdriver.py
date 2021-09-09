@@ -341,27 +341,36 @@ class ConfigHandler():
 
                 incomplete = 0
                 try:
-                    config = _parse_config(self._config_file)
+                    log.debug('Nanda Executing _parse_config: {}'.format(self._config_file))
+                    config, err = _parse_config(self._config_file)
+                    if err:
+                        log.error('error do_reset {}'.format(config))
+                        sys.exit(1)
                     # If LTM is not disabled and
                     # No 'resources' indicates that the controller is not
                     # yet ready -- it does not mean to apply an empty config
                     if not _is_ltm_disabled(config) and \
                             'resources' not in config:
+                        log.debug('Nanda Inside is_ltm_disabled')
                         continue
                     incomplete = self._update_cccl(config)
                 except ValueError:
+                    log.debug('Nanda ValueError exception')
                     formatted_lines = traceback.format_exc().splitlines()
                     last_line = formatted_lines[-1]
                     log.error('Failed to process the config file {} ({})'
                               .format(self._config_file, last_line))
                     incomplete = 1
-                except Exception:
-                    log.exception('Unexpected error')
+                except Exception as e:
+                    log.exception('Unexpected error {}'.format(e))
                     incomplete = 1
 
                 gtmIncomplete = 0
                 try:
-                    config = _parse_config(self._config_file)
+                    config, err = _parse_config(self._config_file)
+                    if err:
+                        log.error('error gtmIncomplete {}'.format(config))
+                        sys.exit(1)
                     gtmIncomplete=self._update_gtm(config)
                 except ValueError:
                     gtmIncomplete += 1
@@ -451,7 +460,9 @@ class ConfigHandler():
         return gtmIncomplete
 
     def _update_cccl(self, config):
+        log.debug('Nanda Executing: _handle_vxlan_config')
         _handle_vxlan_config(config)
+        log.debug('Nanda Executing: create_network_config')
         cfg_net = create_network_config(config)
         incomplete = 0
         for mgr in self._managers:
@@ -1252,16 +1263,23 @@ def _parse_config(config_file):
             return (True, None)
         else:
             return (False, 'Waiting for config file {}'.format(config_file))
+
     _retry_backoff(_file_exist_cb)
 
     with open(config_file, 'r') as config:
-        fcntl.lockf(config.fileno(), fcntl.LOCK_SH, 0, 0, 0)
-        data = config.read()
-        fcntl.lockf(config.fileno(), fcntl.LOCK_UN, 0, 0, 0)
-        config_json = json.loads(data)
-        log.debug('loaded configuration file successfully')
-        return config_json
-
+        try:
+            log.debug('Nanda: Before Locking the file {}'.format(config.fileno()))
+            fcntl.lockf(config.fileno(), fcntl.LOCK_SH, 0, 0, 0)
+            data = config.read()
+            fcntl.lockf(config.fileno(), fcntl.LOCK_UN, 0, 0, 0)
+            config_json = json.loads(data)
+            log.debug('loaded configuration file successfully')
+            log.debug('Nanda inside Parse_config config_json: {}'.format(config_json))
+            return config_json, False
+        except Exception as e:
+            log.debug('Nanda: Inside parse_config : File Lock Exception')
+            log.debug('Nanda: exception: {}'.format(e))
+            return e, True
 
 def _handle_args():
     parser = argparse.ArgumentParser()
@@ -1440,7 +1458,10 @@ def main():
     try:
         args = _handle_args()
 
-        config = _parse_config(args.config_file)
+        config, err = _parse_config(args.config_file)
+        if err:
+            log.error('error main {}'.format(config))
+            sys.exit(1)
         verify_interval, _, vxlan_partition = _handle_global_config(config)
         host, port = _handle_bigip_config(config)
 
@@ -1533,8 +1554,8 @@ def main():
     except (IOError, ValueError, ConfigError) as e:
         log.error(e)
         sys.exit(1)
-    except Exception:
-        log.exception('Unexpected error')
+    except Exception as e:
+        log.exception('Unexpected error main {}'.format(e))
         sys.exit(1)
 
     return 0
