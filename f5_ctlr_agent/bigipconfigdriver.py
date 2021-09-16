@@ -252,8 +252,9 @@ def create_network_config(config):
     if ('vxlan-arp' in config and 'arps' in config['vxlan-arp']
             and config['vxlan-arp']['arps'] is not None):
         net['arps'] = config['vxlan-arp']['arps']
-
-    log.debug("NET Config: %s", json.dumps(net))
+    else:
+        log.debug("NET Config: %s", json.dumps(net))
+    
     return net
 
 
