@@ -422,6 +422,7 @@ class ConfigHandler():
                 partition="Common"
                 try:
                     newGtmConfig=get_gtm_config(partition,config)
+                    mgr._gtm.pre_process_gtm(newGtmConfig)
                     isConfigSame = sorted(oldGtmConfig.items())==sorted(newGtmConfig.items())
                     if isConfigSame:
                         log.info("No change in GMT config.")
@@ -719,7 +720,20 @@ class GTMManager(object):
     def get_partition(self):
         """ Return the managed partition."""
         return self._partition
-    
+
+    @staticmethod
+    def pre_process_gtm(gtmConfig):
+        for partition in gtmConfig:
+            if "wideIPs" in gtmConfig[partition]:
+                if gtmConfig[partition]['wideIPs'] is not None:
+                    for config in gtmConfig[partition]['wideIPs']:
+                        for pool in config['pools']:
+                            if "monitor" in pool.keys():
+                                monitor = pool['monitor']
+                                if "send" in monitor.keys():
+                                    monitor["send"] = monitor["send"].replace("\r", "\\r")
+                                    monitor["send"] = monitor["send"].replace("\n", "\\n")
+
     def delete_update_gtm(self,partition,oldConfig,gtmConfig):
         """ Update GTM object in BIG-IP """
         mgmt = self.mgmt_root()
