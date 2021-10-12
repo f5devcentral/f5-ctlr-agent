@@ -839,7 +839,7 @@ class GTMManager(object):
             log.info('GTM: Creating wideip {}'.format(config['name']))
             gtm.wideips.a_s.a.create(
                 name=config['name'],
-                partition=partition)
+                partition=partition,lastResortPool="none")
             #Attach pool to wideip
             self.attach_gtm_pool_to_wideip(gtm,config['name'],partition,list(newPools.values()))
         else:
@@ -899,6 +899,8 @@ class GTMManager(object):
         #wideip.raw['pools'] =
         #[{'name': 'api-pool1', 'partition': 'test', 'order': 2, 'ratio': 1}]
         wideip = gtm.wideips.a_s.a.load(name=name,partition=partition)
+        if wideip.lastResortPool == "":
+            wideip.lastResortPool = "none"
         if hasattr(wideip,'pools'):
             wideip.pools.extend(poolObj)
             log.info('GTM: Attaching Pool: {} to wideip {}'.format(poolObj,name))
@@ -1016,6 +1018,8 @@ class GTMManager(object):
         """ Remove gtm pool to the wideip """
         try:
             wideip = gtm.wideips.a_s.a.load(name=wideipName,partition=partition)
+            if wideip.lastResortPool == "":
+                wideip.lastResortPool = "none"
             if hasattr(wideip,'pools'):
                 for pool in wideip.pools:
                     if pool["name"]==poolName:
@@ -1063,13 +1067,15 @@ class GTMManager(object):
             #             for pool in wideip['pools']:
             #                 # Fix this multiple loop inside def delete_gtm_pool 
             #                 self.delete_gtm_pool(gtm,partition,oldConfig,wideipName,pool['name'])
-            obj = gtm.wideips.a_s.a.load(
+            wideip = gtm.wideips.a_s.a.load(
                     name=wideipName,
                     partition=partition)
-            if hasattr(obj,'pools'):
+            if wideip.lastResortPool == "":
+                wideip.lastResortPool = "none"
+            if hasattr(wideip,'pools'):
                 log.info("Could not delete wideip as pool object exist.")
             else:
-                obj.delete()
+                wideip.delete()
                 log.info("Deleted the wideIP: {}".format(wideipName))
         except Exception as e:
             log.error("Could not delete wideip: %s", e)
