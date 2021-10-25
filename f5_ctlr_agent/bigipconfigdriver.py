@@ -736,16 +736,19 @@ class GTMManager(object):
 
     def delete_update_gtm(self,partition,oldConfig,gtmConfig):
         """ Update GTM object in BIG-IP """
-        mgmt = self.mgmt_root()
-        gtm=mgmt.tm.gtm
-        if partition in oldConfig and partition in gtmConfig:
-            opr_config = self.process_config(oldConfig[partition],gtmConfig[partition])
-            rev_map = self.create_reverse_map(oldConfig[partition])
-            for opr in opr_config:
-                if opr=="delete":
-                    self.handle_operation_delete(gtm,partition,oldConfig,opr_config[opr],rev_map)
-                if opr=="create" or opr=="update":
-                    self.handle_operation_create(gtm,partition,oldConfig,gtmConfig,opr_config[opr],opr)
+        try:
+            mgmt = self.mgmt_root()
+            gtm=mgmt.tm.gtm
+            if partition in oldConfig and partition in gtmConfig:
+                opr_config = self.process_config(oldConfig[partition],gtmConfig[partition])
+                rev_map = self.create_reverse_map(oldConfig[partition])
+                for opr in opr_config:
+                    if opr=="delete":
+                        self.handle_operation_delete(gtm,partition,oldConfig,opr_config[opr],rev_map)
+                    if opr=="create" or opr=="update":
+                        self.handle_operation_create(gtm,partition,oldConfig,gtmConfig,opr_config[opr],opr)
+        except F5CcclError as e:
+            raise e
 
     def handle_operation_delete(self,gtm,partition,oldConfig,opr_config,rev_map):
         """ Handle delete operation """
@@ -800,10 +803,13 @@ class GTMManager(object):
                                                             partition,
                                                             oldPool['name'],
                                                             member)
-                        #Create GTM pool
-                        self.create_gtm_pool(gtm, partition, config, monitor)
-                        #Create Wideip
-                        self.create_wideip(gtm, partition, config,newPools)
+                        try:
+                            #Create GTM pool
+                            self.create_gtm_pool(gtm, partition, config, monitor)
+                            #Create Wideip
+                            self.create_wideip(gtm, partition, config,newPools)
+                        except F5CcclError as e:
+                            raise e
 
     def create_gtm(self, partition, gtmConfig):
         """ Create GTM object in BIG-IP """
@@ -824,13 +830,16 @@ class GTMManager(object):
                             #Create Health Monitor
                             monitor = pool['monitor']['name']
                             self.create_HM(gtm, partition, pool['monitor'])
-                    #Create GTM pool
-                    self.create_gtm_pool(gtm, partition, config, monitor)
-                    #Create Wideip
-                    self.create_wideip(gtm, partition, config,newPools)
-                    #Attach pool to wideip
-                    # self.attach_gtm_pool_to_wideip(
-                    # gtm, config['name'], partition, obj)
+                    try:
+                        #Create GTM pool
+                        self.create_gtm_pool(gtm, partition, config, monitor)
+                        #Create Wideip
+                        self.create_wideip(gtm, partition, config,newPools)
+                        #Attach pool to wideip
+                        # self.attach_gtm_pool_to_wideip(
+                        # gtm, config['name'], partition, obj)
+                    except F5CcclError as e:
+                        raise e
 
     def create_wideip(self, gtm, partition, config,newPools):
         """ Create wideip and returns the wideip object """
@@ -867,6 +876,7 @@ class GTMManager(object):
         """ Create gtm pools """
         for pool in config['pools']:
             exist=gtm.pools.a_s.a.exists(name=pool['name'], partition=partition)
+            log.debug("Pool: {}, exists: {}".format(pool["name"], exist))
             if not exist:
                 #Create pool object
                 log.info('GTM: Creating Pool: {}'.format(pool['name']))
@@ -888,11 +898,14 @@ class GTMManager(object):
                     pl.update()
                     log.info('Updating monitor {} for pool: {}'.format(monitorName,pool['name']))
 
-            if bool(pool['members']):
-                for member in pool['members']:
-                    #Add member to pool
-                    self.adding_member_to_gtm_pool(
-                        gtm, pl, pool['name'], member, partition)
+            try:
+                if bool(pool['members']):
+                    for member in pool['members']:
+                        #Add member to pool
+                        self.add_member_to_gtm_pool(
+                            gtm, pl, pool['name'], member, partition)
+            except F5CcclError as e:
+                raise e
 
     def attach_gtm_pool_to_wideip(self, gtm, name, partition, poolObj):
         """ Attach gtm pool to the wideip """
@@ -910,26 +923,30 @@ class GTMManager(object):
             log.info('GTM: Attaching Pool: {} to wideip {}'.format(poolObj,name))
             wideip.update()
 
-    def adding_member_to_gtm_pool(self,gtm,pool,poolName,memberName,partition):
+    def add_member_to_gtm_pool(self, gtm, pool, poolName, memberName, partition):
         """ Add member to gtm pool """
         try:
             if not bool(pool):
                 pool = gtm.pools.a_s.a.load(name=poolName,partition=partition)
             exist = pool.members_s.member.exists(
                 name=memberName)
+            log.debug("Pool Member: {}, exists: {}".format(memberName, exist))
             if not exist:
                 s = memberName.split(":")
                 server = s[0].split("/")[-1]
                 vs_name = s[1]
                 serverExist = gtm.servers.server.exists(name=server)
+                log.debug("Server: {}, exists: {}".format(server, serverExist))
                 if serverExist:
                     sl = gtm.servers.server.load(name=server)
                     vsExist = sl.virtual_servers_s.virtual_server.exists(
                         name=vs_name)
+                    log.debug("Virtual Server: {}, exists: {}".format(vs_name, vsExist))
                     if vsExist:
                         pmExist=pool.members_s.member.exists(
                             name=memberName,
                             partition="Common")
+                        log.debug("Pool Member: {}, exists: {}".format(memberName, pmExist))
                         if not pmExist:
                             #Add member to gtm pool created
                             log.info('GTM: Adding pool member {} to pool {}'.format(
@@ -937,6 +954,11 @@ class GTMManager(object):
                             pool.members_s.member.create(
                                 name = memberName,
                                 partition = "Common")
+                    else:
+                        raise F5CcclError(
+                            msg="Virtual Server Resource not Available in BIG-IP")
+                else:
+                    raise F5CcclError(msg="Server Resource not Available in BIG-IP")
         except (AttributeError):
             log.debug("Error while adding member to pool.")
 
