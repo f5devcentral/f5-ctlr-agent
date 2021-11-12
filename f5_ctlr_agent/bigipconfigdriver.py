@@ -755,7 +755,7 @@ class GTMManager(object):
         if len(opr_config["monitors"])>0:
             for monitor in opr_config["monitors"]:
                 poolName=rev_map["monitors"][monitor]
-                self.delete_gtm_hm(gtm,partition,poolName,monitor)
+                self.delete_gtm_hm(gtm,partition,poolName,monitor,oldConfig)
         if len(opr_config["pools"])>0:
             for pool in opr_config["pools"]:
                 wideipForPoolDeleted=rev_map["pools"][pool]
@@ -785,7 +785,7 @@ class GTMManager(object):
                                     if len(opr_config["monitors"])>0:
                                         for mon in opr_config["monitors"]:
                                             if monitor==mon:
-                                                self.delete_gtm_hm(gtm,partition,pool['name'],pool['monitor']['name'])
+                                                self.delete_gtm_hm(gtm,partition,pool['name'],pool['monitor']['name'],oldConfig)
                                 self.create_HM(gtm, partition, pool['monitor'])
                             # Delete the old pool members
                             if partition in oldConfig and "wideIPs" in oldConfig[partition]:
@@ -973,6 +973,10 @@ class GTMManager(object):
                 exist=gtm.monitor.https_s.https.exists(
                     name=monitor['name'],
                     partition=partition)
+            if monitor['type']=="tcp":
+                exist=gtm.monitor.tcps.tcp.exists(
+                    name=monitor['name'],
+                    partition=partition)
             if not exist:
                 if monitor['type']=="http":
                     gtm.monitor.https.http.create(
@@ -990,6 +994,12 @@ class GTMManager(object):
                         recv=monitor['recv'],
                         interval=monitor['interval'],
                         timeout=monitor['timeout'])
+                if monitor['type']=="tcp":
+                    gtm.monitor.tcps.tcp.create(
+                        name=monitor['name'],
+                        partition=partition,
+                        interval=monitor['interval'],
+                        timeout=monitor['timeout'])
             else:
                 if monitor['type']=="http":
                     obj=gtm.monitor.https.http.load(
@@ -999,7 +1009,7 @@ class GTMManager(object):
                     obj.interval=monitor['interval']
                     obj.timeout=monitor['timeout']
                     obj.update()
-                    log.info("Health monitor {} updated.".format(monitor['name']))
+                    log.info("HTTP Health monitor {} updated.".format(monitor['name']))
                 if monitor['type']=="https":
                     log.info(monitor)
                     obj=gtm.monitor.https_s.https.load(
@@ -1009,7 +1019,15 @@ class GTMManager(object):
                     obj.interval=monitor['interval']
                     obj.timeout=monitor['timeout']
                     obj.update()
-                    log.info("Health monitor {} updated.".format(monitor['name']))
+                    log.info("HTTPS Health monitor {} updated.".format(monitor['name']))
+                if monitor['type']=="tcp":
+                    log.info(monitor)
+                    obj=gtm.monitor.tcps.tcp.load(
+                        name=monitor['name'],
+                        partition=partition)
+                    obj.interval=monitor['interval']
+                    obj.timeout=monitor['timeout']
+                    obj.update()
 
 
     def remove_member_to_gtm_pool(self,gtm,partition,poolName,memberName):
@@ -1067,7 +1085,7 @@ class GTMManager(object):
                                         poolName,
                                         member)
                             if hasattr(pool,'monitor') and pool['monitor']['name'] is not None:
-                                self.delete_gtm_hm(gtm,partition,pool['name'],pool['monitor']['name'])
+                                self.delete_gtm_hm(gtm,partition,pool['name'],pool['monitor']['name'],oldConfig)
 
                 self.remove_gtm_pool_to_wideip(gtm,
                     wideipName,partition,poolName)
@@ -1102,25 +1120,37 @@ class GTMManager(object):
         except Exception as e:
             log.error("Could not delete wideip: %s", e)
 
-    def delete_gtm_hm(self,gtm,partition,poolName,monitorName):
+    def delete_gtm_hm(self,gtm,partition,poolName,monitorName,oldConfig):
         """ Delete gtm health monitor """
         self.remove_monitor_to_gtm_pool(gtm,partition,poolName,monitorName)
         try:
-            obj = gtm.monitor.https_s.https.load(
+            type = ""
+            if oldConfig[partition]['wideIPs'] is not None:
+                        for config in oldConfig[partition]['wideIPs']:
+                            for pool in config['pools']:
+                                if "monitor" in pool.keys():
+                                    if monitorName == pool['monitor']['name']:
+                                        type=pool['monitor']['type']
+            if type=="http":
+                obj = gtm.monitor.https.http.load(
                             name=monitorName,
                             partition=partition)
-            obj.delete()
-            log.info("Deleted the HTTPS Health monitor: {}".format(monitorName))
-        except Exception as e:
-            log.error("Could not delete https health monitor: %s", e)
-        try:
-            obj = gtm.monitor.https.http.load(
+                obj.delete()
+                log.info("Deleted the HTTP Health monitor: {}".format(monitorName))
+            elif type=="https":
+                obj = gtm.monitor.https_s.https.load(
                             name=monitorName,
                             partition=partition)
-            obj.delete()
-            log.info("Deleted the HTTP Health monitor: {}".format(monitorName))
+                obj.delete()
+                log.info("Deleted the HTTPS Health monitor: {}".format(monitorName))
+            elif type=="tcp":
+                obj = gtm.monitor.tcps.tcp.load(
+                            name=monitorName,
+                            partition=partition)
+                obj.delete()
+                log.info("Deleted the TCP Health monitor: {}".format(monitorName))
         except Exception as e:
-            log.error("Could not delete http health monitor: %s", e)
+            log.error("Could not delete TCP health monitor: %s", e)
 
     def process_config(self, d1, d2):
         """ Process old and new config """
