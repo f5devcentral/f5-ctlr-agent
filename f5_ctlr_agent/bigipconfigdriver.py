@@ -786,7 +786,7 @@ class GTMManager(object):
                                         for mon in opr_config["monitors"]:
                                             if monitor==mon:
                                                 self.delete_gtm_hm(gtm,partition,pool['name'],pool['monitor']['name'],oldConfig)
-                                self.create_HM(gtm, partition, pool['monitor'])
+                                self.create_HM(gtm, partition, pool['monitor'], config['name'])
                             # Delete the old pool members
                             if partition in oldConfig and "wideIPs" in oldConfig[partition]:
                                 if oldConfig[partition]['wideIPs'] is not None:
@@ -829,7 +829,7 @@ class GTMManager(object):
                         if "monitor" in pool.keys():
                             #Create Health Monitor
                             monitor = pool['monitor']['name']
-                            self.create_HM(gtm, partition, pool['monitor'])
+                            self.create_HM(gtm, partition, pool['monitor'], config['name'])
                     try:
                         #Create GTM pool
                         self.create_gtm_pool(gtm, partition, config, monitor)
@@ -962,7 +962,15 @@ class GTMManager(object):
         except (AttributeError):
             log.debug("Error while adding member to pool.")
 
-    def create_HM(self, gtm, partition, monitor):
+    def get_bigip_version(self):
+        try:
+            mgmt= self.mgmt_root()
+            verList = mgmt.tmos_version.split('.')
+            return float(verList[0] + '.' + verList[1])
+        except Exception as e:
+            log.error("Could not fetch BigipVersion: %s", e)
+
+    def create_HM(self, gtm, partition, monitor, wideIPName):
         """ Create Health Monitor """
         if bool(monitor):
             if monitor['type']=="http":
@@ -987,13 +995,25 @@ class GTMManager(object):
                         interval=monitor['interval'],
                         timeout=monitor['timeout'])
                 if monitor['type']=="https":
-                    gtm.monitor.https_s.https.create(
-                        name=monitor['name'],
-                        partition=partition,
-                        send=monitor['send'],
-                        recv=monitor['recv'],
-                        interval=monitor['interval'],
-                        timeout=monitor['timeout'])
+                    if self.get_bigip_version() >= 16.1:
+                        gtm.monitor.https_s.https.create(
+                            name=monitor['name'],
+                            partition=partition,
+                            send=monitor['send'],
+                            recv=monitor['recv'],
+                            sniServerName=wideIPName,
+                            interval=monitor['interval'],
+                            timeout=monitor['timeout'])
+                    else:
+                        gtm.monitor.https_s.https.create(
+                            name=monitor['name'],
+                            partition=partition,
+                            send=monitor['send'],
+                            recv=monitor['recv'],
+                            interval=monitor['interval'],
+                            timeout=monitor['timeout'])
+
+
                 if monitor['type']=="tcp":
                     gtm.monitor.tcps.tcp.create(
                         name=monitor['name'],
@@ -1018,6 +1038,8 @@ class GTMManager(object):
                     obj.send=monitor['send']
                     obj.interval=monitor['interval']
                     obj.timeout=monitor['timeout']
+                    if self.get_bigip_version() >= 16.1:
+                        obj.sniServerName=wideIPName
                     obj.update()
                     log.info("HTTPS Health monitor {} updated.".format(monitor['name']))
                 if monitor['type']=="tcp":
