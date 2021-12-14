@@ -747,181 +747,196 @@ class GTMManager(object):
                         self.handle_operation_delete(gtm,partition,oldConfig,opr_config[opr],rev_map)
                     if opr=="create" or opr=="update":
                         self.handle_operation_create(gtm,partition,oldConfig,gtmConfig,opr_config[opr],opr)
-        except F5CcclError as e:
+        except Exception as e:
             raise e
 
     def handle_operation_delete(self,gtm,partition,oldConfig,opr_config,rev_map):
         """ Handle delete operation """
-        if len(opr_config["monitors"])>0:
-            for monitor in opr_config["monitors"]:
-                poolName=rev_map["monitors"][monitor]
-                self.delete_gtm_hm(gtm,partition,poolName,monitor,oldConfig)
-        if len(opr_config["pools"])>0:
-            for pool in opr_config["pools"]:
-                wideipForPoolDeleted=rev_map["pools"][pool]
-                for wideip in wideipForPoolDeleted:
-                    self.delete_gtm_pool(gtm,partition,oldConfig,wideip,pool)
-        if len(opr_config["wideIPs"])>0:
-            for wideip in opr_config["wideIPs"]:
-                self.delete_gtm_wideip(gtm,partition,oldConfig,wideip)
+        try:
+            if len(opr_config["monitors"]) > 0:
+                for monitor in opr_config["monitors"]:
+                    poolName = rev_map["monitors"][monitor]
+                    self.delete_gtm_hm(gtm, partition, poolName, monitor, oldConfig)
+            if len(opr_config["pools"]) > 0:
+                for pool in opr_config["pools"]:
+                    wideipForPoolDeleted = rev_map["pools"][pool]
+                    for wideip in wideipForPoolDeleted:
+                        self.delete_gtm_pool(gtm, partition, oldConfig, wideip, pool)
+            if len(opr_config["wideIPs"]) > 0:
+                for wideip in opr_config["wideIPs"]:
+                    self.delete_gtm_wideip(gtm, partition, oldConfig, wideip)
+        except Exception as e:
+            raise e
+
 
     def handle_operation_create(self,gtm,partition,oldConfig,gtmConfig,opr_config,opr):
         """ Handle create operation """
-        if len(opr_config["pools"])>0 or len(opr_config["monitors"])>0 or len(opr_config["wideIPs"])>0:
-            if partition in gtmConfig and "wideIPs" in gtmConfig[partition]:
-                if gtmConfig[partition]['wideIPs'] is not None:
-                    for config in gtmConfig[partition]['wideIPs']:
-                        monitor = ""
-                        newPools = dict()
-                        for pool in config['pools']:
-                            #Pool object
-                            newPools[pool['name']]= {
-                                'name': pool['name'], 'partition': partition, 'ratio': 1
+        try:
+            if len(opr_config["pools"]) > 0 or len(opr_config["monitors"]) > 0 or len(opr_config["wideIPs"]) > 0:
+                if partition in gtmConfig and "wideIPs" in gtmConfig[partition]:
+                    if gtmConfig[partition]['wideIPs'] is not None:
+                        for config in gtmConfig[partition]['wideIPs']:
+                            monitor = ""
+                            newPools = dict()
+                            for pool in config['pools']:
+                                # Pool object
+                                newPools[pool['name']] = {
+                                    'name': pool['name'], 'partition': partition, 'ratio': 1
                                 }
-                            if "monitor" in pool.keys():
-                                #Create Health Monitor
-                                monitor = pool['monitor']['name']
-                                if opr=="update":
-                                    if len(opr_config["monitors"])>0:
-                                        for mon in opr_config["monitors"]:
-                                            if monitor==mon:
-                                                self.delete_gtm_hm(gtm,partition,pool['name'],pool['monitor']['name'],oldConfig)
-                                self.create_HM(gtm, partition, pool['monitor'], config['name'])
-                            # Delete the old pool members
-                            if partition in oldConfig and "wideIPs" in oldConfig[partition]:
-                                if oldConfig[partition]['wideIPs'] is not None:
-                                    for oldConfig in oldConfig[partition]['wideIPs']:
-                                        for oldPool in config['pools']:
-                                            if oldPool['name']==pool['name']:
-                                                if oldPool['members'] is not None and pool['members'] is not None:
-                                                    oldPoolMember=set(oldPool['members'])
-                                                    newPoolMember=set(pool['members'])
-                                                    deleteMember=oldPoolMember-newPoolMember
-                                                    for member in deleteMember:
-                                                        self.remove_member_to_gtm_pool(
-                                                            gtm,
-                                                            partition,
-                                                            oldPool['name'],
-                                                            member)
-                        try:
-                            #Create GTM pool
+                                if "monitor" in pool.keys():
+                                    # Create Health Monitor
+                                    monitor = pool['monitor']['name']
+                                    if opr == "update":
+                                        if len(opr_config["monitors"]) > 0:
+                                            for mon in opr_config["monitors"]:
+                                                if monitor == mon:
+                                                    self.delete_gtm_hm(gtm, partition, pool['name'],
+                                                                       pool['monitor']['name'], oldConfig)
+                                    self.create_HM(gtm, partition, pool['monitor'], config['name'])
+                                # Delete the old pool members
+                                if partition in oldConfig and "wideIPs" in oldConfig[partition]:
+                                    if oldConfig[partition]['wideIPs'] is not None:
+                                        for oldConfig in oldConfig[partition]['wideIPs']:
+                                            for oldPool in config['pools']:
+                                                if oldPool['name'] == pool['name']:
+                                                    if oldPool['members'] is not None and pool['members'] is not None:
+                                                        oldPoolMember = set(oldPool['members'])
+                                                        newPoolMember = set(pool['members'])
+                                                        deleteMember = oldPoolMember - newPoolMember
+                                                        for member in deleteMember:
+                                                            self.remove_member_to_gtm_pool(
+                                                                gtm,
+                                                                partition,
+                                                                oldPool['name'],
+                                                                member)
+                            # Create GTM pool
                             self.create_gtm_pool(gtm, partition, config, monitor)
-                            #Create Wideip
-                            self.create_wideip(gtm, partition, config,newPools)
-                        except F5CcclError as e:
-                            raise e
+                            # Create Wideip
+                            self.create_wideip(gtm, partition, config, newPools)
+        except Exception as e:
+            raise e
+
 
     def create_gtm(self, partition, gtmConfig):
         """ Create GTM object in BIG-IP """
         mgmt = self.mgmt_root()
         gtm=mgmt.tm.gtm
-
-        if "wideIPs" in gtmConfig[partition]:
-            if gtmConfig[partition]['wideIPs'] is not None:
-                for config in gtmConfig[partition]['wideIPs']:
-                    monitor = ""
-                    newPools = dict()
-                    for pool in config['pools']:
-                        #Pool object
-                        newPools[pool['name']]= {
-                            'name': pool['name'], 'partition': partition, 'ratio': 1
+        try:
+            if "wideIPs" in gtmConfig[partition]:
+                if gtmConfig[partition]['wideIPs'] is not None:
+                    for config in gtmConfig[partition]['wideIPs']:
+                        monitor = ""
+                        newPools = dict()
+                        for pool in config['pools']:
+                            # Pool object
+                            newPools[pool['name']] = {
+                                'name': pool['name'], 'partition': partition, 'ratio': 1
                             }
-                        if "monitor" in pool.keys():
-                            #Create Health Monitor
-                            monitor = pool['monitor']['name']
-                            self.create_HM(gtm, partition, pool['monitor'], config['name'])
-                    try:
-                        #Create GTM pool
+                            if "monitor" in pool.keys():
+                                # Create Health Monitor
+                                monitor = pool['monitor']['name']
+                                self.create_HM(gtm, partition, pool['monitor'], config['name'])
+                        # Create GTM pool
                         self.create_gtm_pool(gtm, partition, config, monitor)
-                        #Create Wideip
-                        self.create_wideip(gtm, partition, config,newPools)
-                        #Attach pool to wideip
-                        # self.attach_gtm_pool_to_wideip(
-                        # gtm, config['name'], partition, obj)
-                    except F5CcclError as e:
-                        raise e
+                        # Create Wideip
+                        self.create_wideip(gtm, partition, config, newPools)
+        except Exception as e:
+            raise e
+
+
 
     def create_wideip(self, gtm, partition, config,newPools):
         """ Create wideip and returns the wideip object """
-        exist=gtm.wideips.a_s.a.exists(name=config['name'], partition=partition)
-        if not exist:
-            log.info('GTM: Creating wideip {}'.format(config['name']))
-            gtm.wideips.a_s.a.create(
-                name=config['name'],
-                partition=partition,lastResortPool="none")
-            #Attach pool to wideip
-            self.attach_gtm_pool_to_wideip(gtm,config['name'],partition,list(newPools.values()))
-        else:
-            wideip = gtm.wideips.a_s.a.load(
-                name=config['name'],
-                partition=partition)
-            duplicatePools = []
-            if hasattr(wideip,'pools'):
-                for p in newPools.keys():
-                    if hasattr(wideip.raw['pools'],p):
-                        duplicatePools.append(p)
-            
-            for poolName in duplicatePools:
-                del newPools[poolName]
+        try:
+            exist = gtm.wideips.a_s.a.exists(name=config['name'], partition=partition)
+            if not exist:
+                log.info('GTM: Creating wideip {}'.format(config['name']))
+                gtm.wideips.a_s.a.create(
+                    name=config['name'],
+                    partition=partition, lastResortPool="none")
+                # Attach pool to wideip
+                self.attach_gtm_pool_to_wideip(gtm, config['name'], partition, list(newPools.values()))
+            else:
+                wideip = gtm.wideips.a_s.a.load(
+                    name=config['name'],
+                    partition=partition)
+                duplicatePools = []
+                if hasattr(wideip, 'pools'):
+                    for p in newPools.keys():
+                        if hasattr(wideip.raw['pools'], p):
+                            duplicatePools.append(p)
 
-            if len(newPools)>0:
-                self.attach_gtm_pool_to_wideip(
-                    gtm,
-                    config['name'],
-                    partition,
-                    list(newPools.values()))
+                for poolName in duplicatePools:
+                    del newPools[poolName]
+
+                if len(newPools) > 0:
+                    self.attach_gtm_pool_to_wideip(
+                        gtm,
+                        config['name'],
+                        partition,
+                        list(newPools.values()))
+        except Exception as e:
+            raise e
+
+
 
 
     def create_gtm_pool(self, gtm, partition, config, monitorName):
         """ Create gtm pools """
-        for pool in config['pools']:
-            exist=gtm.pools.a_s.a.exists(name=pool['name'], partition=partition)
-            log.debug("Pool: {}, exists: {}".format(pool["name"], exist))
-            if not exist:
-                #Create pool object
-                log.info('GTM: Creating Pool: {}'.format(pool['name']))
-                if not monitorName:
-                    pl=gtm.pools.a_s.a.create(
-                    name=pool['name'],
-                    partition=partition)
+        try:
+            for pool in config['pools']:
+                exist = gtm.pools.a_s.a.exists(name=pool['name'], partition=partition)
+                log.debug("Pool: {}, exists: {}".format(pool["name"], exist))
+                if not exist:
+                    # Create pool object
+                    log.info('GTM: Creating Pool: {}'.format(pool['name']))
+                    if not monitorName:
+                        pl = gtm.pools.a_s.a.create(
+                            name=pool['name'],
+                            partition=partition)
+                    else:
+                        pl = gtm.pools.a_s.a.create(
+                            name=pool['name'],
+                            partition=partition,
+                            monitor="/" + partition + "/" + monitorName)
                 else:
-                    pl=gtm.pools.a_s.a.create(
+                    pl = gtm.pools.a_s.a.load(
                         name=pool['name'],
-                        partition=partition,
-                        monitor="/"+partition+"/"+monitorName)
-            else:
-                pl=gtm.pools.a_s.a.load(
-                    name=pool['name'],
-                    partition=partition)
-                if monitorName:
-                    pl.monitor="/"+partition+"/"+monitorName
-                    pl.update()
-                    log.info('Updating monitor {} for pool: {}'.format(monitorName,pool['name']))
+                        partition=partition)
+                    if monitorName:
+                        pl.monitor = "/" + partition + "/" + monitorName
+                        pl.update()
+                        log.info('Updating monitor {} for pool: {}'.format(monitorName, pool['name']))
 
-            try:
                 if bool(pool['members']):
                     for member in pool['members']:
-                        #Add member to pool
+                        # Add member to pool
                         self.add_member_to_gtm_pool(
                             gtm, pl, pool['name'], member, partition)
-            except F5CcclError as e:
-                raise e
+
+        except Exception as e:
+            raise e
+
 
     def attach_gtm_pool_to_wideip(self, gtm, name, partition, poolObj):
         """ Attach gtm pool to the wideip """
         #wideip.raw['pools'] =
         #[{'name': 'api-pool1', 'partition': 'test', 'order': 2, 'ratio': 1}]
-        wideip = gtm.wideips.a_s.a.load(name=name,partition=partition)
-        if wideip.lastResortPool == "":
-            wideip.lastResortPool = "none"
-        if hasattr(wideip,'pools'):
-            wideip.pools.extend(poolObj)
-            log.info('GTM: Attaching Pool: {} to wideip {}'.format(poolObj,name))
-            wideip.update()
-        else:
-            wideip.raw['pools'] = poolObj
-            log.info('GTM: Attaching Pool: {} to wideip {}'.format(poolObj,name))
-            wideip.update()
+        try:
+            wideip = gtm.wideips.a_s.a.load(name=name, partition=partition)
+            if wideip.lastResortPool == "":
+                wideip.lastResortPool = "none"
+            if hasattr(wideip, 'pools'):
+                wideip.pools.extend(poolObj)
+                log.info('GTM: Attaching Pool: {} to wideip {}'.format(poolObj, name))
+                wideip.update()
+            else:
+                wideip.raw['pools'] = poolObj
+                log.info('GTM: Attaching Pool: {} to wideip {}'.format(poolObj, name))
+                wideip.update()
+        except Exception as e:
+            raise e
+
 
     def add_member_to_gtm_pool(self, gtm, pool, poolName, memberName, partition):
         """ Add member to gtm pool """
@@ -969,87 +984,90 @@ class GTMManager(object):
             return float(verList[0] + '.' + verList[1])
         except Exception as e:
             log.error("Could not fetch BigipVersion: %s", e)
+            raise e
 
     def create_HM(self, gtm, partition, monitor, wideIPName):
         """ Create Health Monitor """
-        if bool(monitor):
-            if monitor['type']=="http":
-                exist=gtm.monitor.https.http.exists(
-                    name=monitor['name'],
-                    partition=partition)
-            if monitor['type']=="https":
-                exist=gtm.monitor.https_s.https.exists(
-                    name=monitor['name'],
-                    partition=partition)
-            if monitor['type']=="tcp":
-                exist=gtm.monitor.tcps.tcp.exists(
-                    name=monitor['name'],
-                    partition=partition)
-            if not exist:
-                if monitor['type']=="http":
-                    gtm.monitor.https.http.create(
+        try:
+            if bool(monitor):
+                if monitor['type'] == "http":
+                    exist = gtm.monitor.https.http.exists(
                         name=monitor['name'],
-                        partition=partition,
-                        send=monitor['send'],
-                        recv=monitor['recv'],
-                        interval=monitor['interval'],
-                        timeout=monitor['timeout'])
-                if monitor['type']=="https":
-                    if self.get_bigip_version() >= 16.1:
-                        gtm.monitor.https_s.https.create(
-                            name=monitor['name'],
-                            partition=partition,
-                            send=monitor['send'],
-                            recv=monitor['recv'],
-                            sniServerName=wideIPName,
-                            interval=monitor['interval'],
-                            timeout=monitor['timeout'])
-                    else:
-                        gtm.monitor.https_s.https.create(
+                        partition=partition)
+                if monitor['type'] == "https":
+                    exist = gtm.monitor.https_s.https.exists(
+                        name=monitor['name'],
+                        partition=partition)
+                if monitor['type'] == "tcp":
+                    exist = gtm.monitor.tcps.tcp.exists(
+                        name=monitor['name'],
+                        partition=partition)
+                if not exist:
+                    if monitor['type'] == "http":
+                        gtm.monitor.https.http.create(
                             name=monitor['name'],
                             partition=partition,
                             send=monitor['send'],
                             recv=monitor['recv'],
                             interval=monitor['interval'],
                             timeout=monitor['timeout'])
+                    if monitor['type'] == "https":
+                        if self.get_bigip_version() >= 16.1:
+                            gtm.monitor.https_s.https.create(
+                                name=monitor['name'],
+                                partition=partition,
+                                send=monitor['send'],
+                                recv=monitor['recv'],
+                                sniServerName=wideIPName,
+                                interval=monitor['interval'],
+                                timeout=monitor['timeout'])
+                        else:
+                            gtm.monitor.https_s.https.create(
+                                name=monitor['name'],
+                                partition=partition,
+                                send=monitor['send'],
+                                recv=monitor['recv'],
+                                interval=monitor['interval'],
+                                timeout=monitor['timeout'])
 
-
-                if monitor['type']=="tcp":
-                    gtm.monitor.tcps.tcp.create(
-                        name=monitor['name'],
-                        partition=partition,
-                        interval=monitor['interval'],
-                        timeout=monitor['timeout'])
-            else:
-                if monitor['type']=="http":
-                    obj=gtm.monitor.https.http.load(
-                        name=monitor['name'],
-                        partition=partition)
-                    obj.send=monitor['send']
-                    obj.interval=monitor['interval']
-                    obj.timeout=monitor['timeout']
-                    obj.update()
-                    log.info("HTTP Health monitor {} updated.".format(monitor['name']))
-                if monitor['type']=="https":
-                    log.info(monitor)
-                    obj=gtm.monitor.https_s.https.load(
-                        name=monitor['name'],
-                        partition=partition)
-                    obj.send=monitor['send']
-                    obj.interval=monitor['interval']
-                    obj.timeout=monitor['timeout']
-                    if self.get_bigip_version() >= 16.1:
-                        obj.sniServerName=wideIPName
-                    obj.update()
-                    log.info("HTTPS Health monitor {} updated.".format(monitor['name']))
-                if monitor['type']=="tcp":
-                    log.info(monitor)
-                    obj=gtm.monitor.tcps.tcp.load(
-                        name=monitor['name'],
-                        partition=partition)
-                    obj.interval=monitor['interval']
-                    obj.timeout=monitor['timeout']
-                    obj.update()
+                    if monitor['type'] == "tcp":
+                        gtm.monitor.tcps.tcp.create(
+                            name=monitor['name'],
+                            partition=partition,
+                            interval=monitor['interval'],
+                            timeout=monitor['timeout'])
+                else:
+                    if monitor['type'] == "http":
+                        obj = gtm.monitor.https.http.load(
+                            name=monitor['name'],
+                            partition=partition)
+                        obj.send = monitor['send']
+                        obj.interval = monitor['interval']
+                        obj.timeout = monitor['timeout']
+                        obj.update()
+                        log.info("HTTP Health monitor {} updated.".format(monitor['name']))
+                    if monitor['type'] == "https":
+                        log.info(monitor)
+                        obj = gtm.monitor.https_s.https.load(
+                            name=monitor['name'],
+                            partition=partition)
+                        obj.send = monitor['send']
+                        obj.interval = monitor['interval']
+                        obj.timeout = monitor['timeout']
+                        if self.get_bigip_version() >= 16.1:
+                            obj.sniServerName = wideIPName
+                        obj.update()
+                        log.info("HTTPS Health monitor {} updated.".format(monitor['name']))
+                    if monitor['type'] == "tcp":
+                        log.info(monitor)
+                        obj = gtm.monitor.tcps.tcp.load(
+                            name=monitor['name'],
+                            partition=partition)
+                        obj.interval = monitor['interval']
+                        obj.timeout = monitor['timeout']
+                        obj.update()
+        except Exception as e:
+            raise e
 
 
     def remove_member_to_gtm_pool(self,gtm,partition,poolName,memberName):
@@ -1062,7 +1080,8 @@ class GTMManager(object):
                 memObj.delete()
                 log.info("Member {} deleted.".format(memberName))
         except Exception as e:
-            log.error("Could not remove pool member: %s", e)
+            log.error("Could not remove pool member")
+            raise e
 
     def remove_monitor_to_gtm_pool(self,gtm,partition,poolName,monitorName):
         """ Remove monitor from gtm pool """
@@ -1075,6 +1094,7 @@ class GTMManager(object):
                     log.info("Detached health monitor {} from pool {}".format(monitorName,poolName))
         except Exception as e:
             log.error("Could not remove monitor from pool: %s", e)
+            raise e
 
     def remove_gtm_pool_to_wideip(self, gtm, wideipName, partition, poolName):
         """ Remove gtm pool to the wideip """
@@ -1090,6 +1110,7 @@ class GTMManager(object):
                         log.info("Removed the pool: {}".format(poolName))
         except Exception as e:
             log.error("Could not remove pool: %s", e)
+            raise
 
     def delete_gtm_pool(self,gtm,partition,oldConfig,wideipName,poolName):
         """ Delete gtm pools """
@@ -1118,6 +1139,7 @@ class GTMManager(object):
                 log.info("Deleted the pool: {}".format(poolName))
         except Exception as e:
             log.error("Could not delete pool: %s", e)
+            raise e
 
     def delete_gtm_wideip(self,gtm,partition,oldConfig,wideipName):
         """ Delete gtm wideip """
@@ -1141,6 +1163,7 @@ class GTMManager(object):
                 log.info("Deleted the wideIP: {}".format(wideipName))
         except Exception as e:
             log.error("Could not delete wideip: %s", e)
+            raise e
 
     def delete_gtm_hm(self,gtm,partition,poolName,monitorName,oldConfig):
         """ Delete gtm health monitor """
