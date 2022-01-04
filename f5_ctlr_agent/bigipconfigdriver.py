@@ -424,9 +424,9 @@ class ConfigHandler():
                     newGtmConfig=get_gtm_config(partition,config)
                     mgr._gtm.pre_process_gtm(newGtmConfig)
                     isConfigSame = sorted(oldGtmConfig.items())==sorted(newGtmConfig.items())
-                    if isConfigSame:
-                        log.info("No change in GTM config.")
-                    elif not isConfigSame and len(oldGtmConfig)==0:
+                    if oldGtmConfig[partition]['wideIPs'] is None and newGtmConfig[partition]['wideIPs'] is None:
+                        break
+                    if not isConfigSame and oldGtmConfig[partition]['wideIPs'] is None:
                         # GTM config is not same and for
                         # first time gtm config updates
                         if partition in newGtmConfig:
