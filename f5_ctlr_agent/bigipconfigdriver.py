@@ -27,7 +27,7 @@ import sys
 import threading
 import time
 import traceback
-
+import copy
 import pyinotify
 
 from urllib.parse import urlparse
@@ -443,7 +443,7 @@ class ConfigHandler():
                         if partition in newGtmConfig:
                             mgr._gtm.delete_update_gtm(
                                     partition,
-                                    oldGtmConfig,newGtmConfig)
+                                    newGtmConfig)
                         mgr._gtm.replace_gtm_config(newGtmConfig)
                 except F5CcclError as e:
                     # We created an invalid configuration, raise the
@@ -734,9 +734,10 @@ class GTMManager(object):
                                     monitor["send"] = monitor["send"].replace("\r", "\\r")
                                     monitor["send"] = monitor["send"].replace("\n", "\\n")
 
-    def delete_update_gtm(self,partition,oldConfig,gtmConfig):
+    def delete_update_gtm(self,partition,gtmConfig):
         """ Update GTM object in BIG-IP """
         try:
+            oldConfig = self._gtm_config
             mgmt = self.mgmt_root()
             gtm=mgmt.tm.gtm
             if partition in oldConfig and partition in gtmConfig:
@@ -744,33 +745,37 @@ class GTMManager(object):
                 rev_map = self.create_reverse_map(oldConfig[partition])
                 for opr in opr_config:
                     if opr=="delete":
-                        self.handle_operation_delete(gtm,partition,oldConfig,opr_config[opr],rev_map)
+                        self.handle_operation_delete(gtm,partition,opr_config[opr],rev_map)
                     if opr=="create" or opr=="update":
-                        self.handle_operation_create(gtm,partition,oldConfig,gtmConfig,opr_config[opr],opr)
+                        self.handle_operation_create(gtm,partition,gtmConfig,opr_config[opr],opr)
         except F5CcclError as e:
             raise e
 
-    def handle_operation_delete(self,gtm,partition,oldConfig,opr_config,rev_map):
+    def handle_operation_delete(self,gtm,partition,opr_config,rev_map):
         """ Handle delete operation """
         try:
             if len(opr_config["monitors"]) > 0:
                 for monitor in opr_config["monitors"]:
                     poolName = rev_map["monitors"][monitor]
-                    self.delete_gtm_hm(gtm, partition, poolName, monitor, oldConfig)
+                    self.remove_monitor_to_gtm_pool(gtm, partition, poolName, monitor)
+                    self.delete_gtm_hm(gtm, partition, monitor)
+
             if len(opr_config["pools"]) > 0:
                 for pool in opr_config["pools"]:
                     wideipForPoolDeleted = rev_map["pools"][pool]
                     for wideip in wideipForPoolDeleted:
-                        self.delete_gtm_pool(gtm, partition, oldConfig, wideip, pool)
+                        self.delete_gtm_pool(gtm, partition, wideip, pool)
             if len(opr_config["wideIPs"]) > 0:
                 for wideip in opr_config["wideIPs"]:
-                    self.delete_gtm_wideip(gtm, partition, oldConfig, wideip)
+                    self.delete_gtm_wideip(gtm, partition, wideip)
         except F5CcclError as e:
             log.error("GTM: Error while handling delete operation: %s", e)
+            raise e
 
-    def handle_operation_create(self,gtm,partition,oldConfig,gtmConfig,opr_config,opr):
+    def handle_operation_create(self,gtm,partition,gtmConfig,opr_config,opr):
         """ Handle create operation """
         try:
+            oldConfig = copy.deepcopy(self._gtm_config)
             if len(opr_config["pools"]) > 0 or len(opr_config["monitors"]) > 0 or len(opr_config["wideIPs"]) > 0:
                 if partition in gtmConfig and "wideIPs" in gtmConfig[partition]:
                     if gtmConfig[partition]['wideIPs'] is not None:
@@ -789,14 +794,15 @@ class GTMManager(object):
                                         if len(opr_config["monitors"]) > 0:
                                             for mon in opr_config["monitors"]:
                                                 if monitor == mon:
-                                                    self.delete_gtm_hm(gtm, partition, pool['name'],
-                                                                       pool['monitor']['name'], oldConfig)
+                                                    self.remove_monitor_to_gtm_pool(gtm, partition, pool['name'],
+                                                                                    pool['monitor']['name'])
+                                                    self.delete_gtm_hm(gtm, partition, pool['monitor']['name'])
                                     self.create_HM(gtm, partition, pool['monitor'], config['name'])
                                 # Delete the old pool members
                                 if partition in oldConfig and "wideIPs" in oldConfig[partition]:
                                     if oldConfig[partition]['wideIPs'] is not None:
-                                        for oldConfig in oldConfig[partition]['wideIPs']:
-                                            for oldPool in config['pools']:
+                                        for index, oldConfig in enumerate(oldConfig[partition]['wideIPs']):
+                                            for pool_index, oldPool in enumerate(config['pools']):
                                                 if oldPool['name'] == pool['name']:
                                                     if oldPool['members'] is not None and pool['members'] is not None:
                                                         oldPoolMember = set(oldPool['members'])
@@ -808,6 +814,8 @@ class GTMManager(object):
                                                                 partition,
                                                                 oldPool['name'],
                                                                 member)
+                                                        self._gtm_config[partition]['wideIPs'][index]["pools"][
+                                                            pool_index]['members'] = None
                             try:
                                 # Create GTM pool
                                 self.create_gtm_pool(gtm, partition, config, monitor)
@@ -817,6 +825,7 @@ class GTMManager(object):
                                 raise e
         except F5CcclError as e:
             log.error("GTM: Error while handling create operation: %s", e)
+            raise e
 
     def create_gtm(self, partition, gtmConfig):
         """ Create GTM object in BIG-IP """
@@ -846,6 +855,7 @@ class GTMManager(object):
                             raise e
         except F5CcclError as e:
             log.error("GTM: Error while creating gtm: %s", e)
+            raise e
 
     def create_wideip(self, gtm, partition, config,newPools):
         """ Create wideip and returns the wideip object """
@@ -879,6 +889,7 @@ class GTMManager(object):
                         list(newPools.values()))
         except F5CcclError as e:
             log.error("GTM: Error while creating wideip: %s", e)
+            raise e
 
 
     def create_gtm_pool(self, gtm, partition, config, monitorName):
@@ -907,16 +918,14 @@ class GTMManager(object):
                         pl.monitor = "/" + partition + "/" + monitorName
                         pl.update()
                         log.info('Updating monitor {} for pool: {}'.format(monitorName, pool['name']))
-                try:
-                    if bool(pool['members']):
-                        for member in pool['members']:
-                            # Add member to pool
-                            self.add_member_to_gtm_pool(
-                                gtm, pl, pool['name'], member, partition)
-                except F5CcclError as e:
-                    raise e
+                if bool(pool['members']):
+                    for member in pool['members']:
+                        # Add member to pool
+                        self.add_member_to_gtm_pool(
+                            gtm, pl, pool['name'], member, partition)
         except F5CcclError as e:
             log.error("GTM: Error while creating pool: %s", e)
+            raise e
 
     def attach_gtm_pool_to_wideip(self, gtm, name, partition, poolObj):
         """ Attach gtm pool to the wideip """
@@ -936,6 +945,7 @@ class GTMManager(object):
                 wideip.update()
         except F5CcclError as e:
             log.error("GTM: Error while attaching gtm pool to wideip: %s", e)
+            raise e
 
     def add_member_to_gtm_pool(self, gtm, pool, poolName, memberName, partition):
         """ Add member to gtm pool """
@@ -973,8 +983,10 @@ class GTMManager(object):
                             msg="Virtual Server Resource not Available in BIG-IP")
                 else:
                     raise F5CcclError(msg="Server Resource not Available in BIG-IP")
-        except (AttributeError):
+        except (F5CcclError) as e:
             log.debug("GTM: Error while adding member to pool.")
+            raise e
+
 
     def get_bigip_version(self):
         try:
@@ -983,6 +995,7 @@ class GTMManager(object):
             return float(verList[0] + '.' + verList[1])
         except F5CcclError as e:
             log.error("GTM: Could not fetch BigipVersion: %s", e)
+            raise e
 
     def create_HM(self, gtm, partition, monitor, wideIPName):
         """ Create Health Monitor """
@@ -1066,6 +1079,7 @@ class GTMManager(object):
                         obj.update()
         except F5CcclError as e:
             log.debug("GTM: Error while creating Health Monitor: %s", e)
+            raise e
 
 
     def remove_member_to_gtm_pool(self,gtm,partition,poolName,memberName):
@@ -1079,6 +1093,7 @@ class GTMManager(object):
                 log.info("Member {} deleted.".format(memberName))
         except F5CcclError as e:
             log.error("GTM: Error while removing pool member: %s", e)
+            raise e
 
     def remove_monitor_to_gtm_pool(self,gtm,partition,poolName,monitorName):
         """ Remove monitor from gtm pool """
@@ -1091,6 +1106,7 @@ class GTMManager(object):
                     log.info("Detached health monitor {} from pool {}".format(monitorName,poolName))
         except F5CcclError as e:
             log.error("Error while removing monitor from pool: %s", e)
+            raise e
 
     def remove_gtm_pool_to_wideip(self, gtm, wideipName, partition, poolName):
         """ Remove gtm pool to the wideip """
@@ -1106,15 +1122,17 @@ class GTMManager(object):
                         log.info("Removed the pool: {}".format(poolName))
         except F5CcclError as e:
             log.error("GTM: Error while removing pool: %s", e)
+            raise e
 
-    def delete_gtm_pool(self,gtm,partition,oldConfig,wideipName,poolName):
+    def delete_gtm_pool(self,gtm,partition,wideipName,poolName):
         """ Delete gtm pools """
         try:
+            oldConfig = copy.deepcopy(self._gtm_config)
             # Fix this multiple loop 
             if oldConfig[partition]['wideIPs'] is not None:
-                for wideip in oldConfig[partition]['wideIPs']:
+                for index, wideip in enumerate(oldConfig[partition]['wideIPs']):
                     if wideipName==wideip['name']:
-                        for pool in wideip['pools']:
+                        for pool_index, pool in enumerate(wideip['pools']):
                             if pool['name']==poolName and pool['members'] is not None:
                                 for member in pool['members']:
                                     self.remove_member_to_gtm_pool(
@@ -1122,9 +1140,9 @@ class GTMManager(object):
                                         partition,
                                         poolName,
                                         member)
-                            if hasattr(pool,'monitor') and pool['monitor']['name'] is not None:
-                                self.delete_gtm_hm(gtm,partition,pool['name'],pool['monitor']['name'],oldConfig)
-
+                                self._gtm_config[partition]['wideIPs'][index]["pools"][pool_index]['members'] = None
+                            # if hasattr(pool,'monitor') and pool['monitor']['name'] is not None:
+                            #     self.remove_monitor_to_gtm_pool(gtm, partition, poolName, pool['monitor']['name'])
                 self.remove_gtm_pool_to_wideip(gtm,
                     wideipName,partition,poolName)
                 obj = gtm.pools.a_s.a.load(
@@ -1132,13 +1150,16 @@ class GTMManager(object):
                     partition=partition)
                 obj.delete()
                 log.info("Deleted the pool: {}".format(poolName))
+                self._gtm_config[partition]['wideIPs'][index]["pools"].pop(pool_index)
         except F5CcclError as e:
             log.error("GTM: Error while deleting pool: %s", e)
+            raise e
 
 
-    def delete_gtm_wideip(self,gtm,partition,oldConfig,wideipName):
+    def delete_gtm_wideip(self,gtm,partition,wideipName):
         """ Delete gtm wideip """
         try:
+            oldConfig = copy.deepcopy(self._gtm_config)
             # As pool is deleted as part of delete_gtm_pool
             # if oldConfig[partition]['wideIPs'] is not None:
             #     for wideip in oldConfig[partition]['wideIPs']:
@@ -1156,20 +1177,25 @@ class GTMManager(object):
             else:
                 wideip.delete()
                 log.info("Deleted the wideIP: {}".format(wideipName))
+                if oldConfig[partition]['wideIPs'] is not None:
+                    for index, wideip in enumerate(oldConfig[partition]['wideIPs']):
+                        if wideipName == wideip['name']:
+                            self._gtm_config[partition]['wideIPs'].pop(index)
         except F5CcclError as e:
             log.error("Could not delete wideip: %s", e)
+            raise e
 
-    def delete_gtm_hm(self,gtm,partition,poolName,monitorName,oldConfig):
+    def delete_gtm_hm(self,gtm,partition,monitorName):
         """ Delete gtm health monitor """
         try:
-            self.remove_monitor_to_gtm_pool(gtm, partition, poolName, monitorName)
+            oldConfig = copy.deepcopy(self._gtm_config)
             type = ""
             if oldConfig[partition]['wideIPs'] is not None:
-                        for config in oldConfig[partition]['wideIPs']:
-                            for pool in config['pools']:
-                                if "monitor" in pool.keys():
-                                    if monitorName == pool['monitor']['name']:
-                                        type=pool['monitor']['type']
+                for index, config in enumerate(oldConfig[partition]['wideIPs']):
+                    for pool_index, pool in enumerate(config['pools']):
+                        if "monitor" in pool.keys():
+                            if monitorName == pool['monitor']['name']:
+                                type=pool['monitor']['type']
             if type=="http":
                 obj = gtm.monitor.https.http.load(
                             name=monitorName,
@@ -1188,8 +1214,10 @@ class GTMManager(object):
                             partition=partition)
                 obj.delete()
                 log.info("Deleted the TCP Health monitor: {}".format(monitorName))
+            self._gtm_config[partition]['wideIPs'][index]["pools"][pool_index].pop("monitor")
         except F5CcclError as e:
             log.error("GTM: Could not delete health monitor: %s", e)
+            raise e
 
     def process_config(self, d1, d2):
         """ Process old and new config """
