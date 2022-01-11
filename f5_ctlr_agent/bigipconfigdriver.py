@@ -160,14 +160,14 @@ class IntervalTimer(object):
         return adjusted_interval
 
     def _run(self):
-        start_time = time.clock()
+        start_time = time.process_time()
         try:
             self._cb()
         except Exception:
             log.exception('Unexpected error')
         finally:
             with self._lock:
-                stop_time = time.clock()
+                stop_time = time.process_time()
                 self._set_execution_time(start_time, stop_time)
                 if self._running:
                     self.start()
