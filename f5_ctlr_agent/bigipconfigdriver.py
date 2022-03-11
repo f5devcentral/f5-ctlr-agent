@@ -343,13 +343,20 @@ class ConfigHandler():
                 incomplete = 0
                 try:
                     config = _parse_config(self._config_file)
-                    # If LTM is not disabled and
+
+                    # No ARP entries indicate controller is not yet ready
+                    # Valid even when there are no resources in an environment
+                    if 'vxlan-arp' not in config:
+                        continue
+
+                    # If LTM is not disabled - CCCL mode and
                     # No 'resources' indicates that the controller is not
                     # yet ready -- it does not mean to apply an empty config
-                    if not _is_ltm_disabled(config) and \
-                            'resources' not in config:
+                    if not _is_ltm_disabled(config) and 'resources' not in config:
                         continue
+
                     incomplete = self._update_cccl(config)
+
                 except ValueError:
                     formatted_lines = traceback.format_exc().splitlines()
                     last_line = formatted_lines[-1]
