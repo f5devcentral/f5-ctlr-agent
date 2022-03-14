@@ -344,15 +344,15 @@ class ConfigHandler():
                 try:
                     config = _parse_config(self._config_file)
 
-                    # No ARP entries indicate controller is not yet ready
-                    # Valid even when there are no resources in an environment
-                    if 'vxlan-arp' not in config:
-                        continue
-
                     # If LTM is not disabled - CCCL mode and
                     # No 'resources' indicates that the controller is not
                     # yet ready -- it does not mean to apply an empty config
                     if not _is_ltm_disabled(config) and 'resources' not in config:
+                        continue
+
+                    # No ARP entries indicate controller is not yet ready
+                    # Valid even when there are no resources in cluster mode environment
+                    if not _is_arp_disabled(config) and 'vxlan-arp' not in config and 'vxlan-fdb' in config:
                         continue
 
                     incomplete = self._update_cccl(config)
@@ -1580,6 +1580,12 @@ def _find_net_schema():
 def _is_ltm_disabled(config):
     try:
         return config['global']['disable-ltm']
+    except KeyError:
+        return False
+
+def _is_arp_disabled(config):
+    try:
+        return config['global']['disable-arp']
     except KeyError:
         return False
 
