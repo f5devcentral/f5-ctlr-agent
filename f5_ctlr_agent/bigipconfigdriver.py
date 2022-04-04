@@ -1149,6 +1149,8 @@ class GTMManager(object):
                                         poolName,
                                         member)
                                 self._gtm_config[partition]['wideIPs'][index]["pools"][pool_index]['members'] = None
+                                break
+                        break
                 self.remove_gtm_pool_to_wideip(gtm,
                     wideipName,partition,poolName)
                 obj = gtm.pools.a_s.a.load(
