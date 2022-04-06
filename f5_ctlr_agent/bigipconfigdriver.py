@@ -764,7 +764,6 @@ class GTMManager(object):
                     poolName = rev_map["monitors"][monitor]
                     self.remove_monitor_from_gtm_pool(gtm, partition, poolName, monitor)
                     self.delete_gtm_hm(gtm, partition, monitor)
-
             if len(opr_config["pools"]) > 0:
                 for pool in opr_config["pools"]:
                     wideipForPoolDeleted = rev_map["pools"][pool]
@@ -1004,6 +1003,20 @@ class GTMManager(object):
                             msg="Virtual Server Resource not Available in BIG-IP")
                 else:
                     raise F5CcclError(msg="Server Resource not Available in BIG-IP")
+            else:
+                gtmPoolMembers = [gtmMember.name for gtmMember in pool.members_s.get_collection()]
+                poolObj,gtmPoolMember = memberName.split('/Shared/')
+                parseNamefromMember = ('_').join(gtmPoolMember.split('_')[:-1])
+                for getGtmPlMember in gtmPoolMembers:
+                    if getGtmPlMember.startswith(parseNamefromMember) and getGtmPlMember != gtmPoolMember:
+                        member = poolObj+'/Shared/'+getGtmPlMember
+                        log.debug(
+                            "removing other redundant GTM Pool Member:{}".format(member))
+                        self.remove_member_to_gtm_pool(
+                            gtm,
+                            partition,
+                            poolName,
+                            member)
         except (F5CcclError) as e:
             log.debug("GTM: Error while adding member to pool.")
             raise e
