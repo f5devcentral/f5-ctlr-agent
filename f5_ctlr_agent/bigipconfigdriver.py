@@ -435,6 +435,8 @@ class ConfigHandler():
                         # GTM config is not same and for
                         # first time gtm config updates
                         if partition in newGtmConfig:
+                            #Remove unused GTM PoolMembers from BIGIP created by CIS <= v2.7.1
+                            mgr._gtm.remove_unused_poolmembers(partition, newGtmConfig[partition])
                             mgr._gtm.create_gtm(
                                     partition,
                                     newGtmConfig)
@@ -709,6 +711,7 @@ class GTMManager(object):
         self._mgmt_root = bigip
         self._partition = partition
         self._gtm_config = {}
+        self._gtm = bigip.tm.gtm
 
     def get_gtm_config(self):
         """ Return the GTM config object"""
@@ -721,6 +724,9 @@ class GTMManager(object):
     def mgmt_root(self):
         """ Return the BIG-IP ManagementRoot object"""
         return self._mgmt_root
+
+    def gtm(self):
+        return self._gtm
 
     def get_partition(self):
         """ Return the managed partition."""
@@ -835,11 +841,78 @@ class GTMManager(object):
             log.error("GTM: Error while handling create operation: %s", e)
             raise e
 
+    def remove_unused_poolmembers(self, partition, gtmConfig):
+        """Remove unused GTM PoolMembers from BIGIP created by CIS <= v2.7.1 """
+        try:
+            def _get_value(d, k):
+                if d[k] is None:
+                    return dict()
+                return d[k]
+
+            def _get_virtualNames_from_member(gtm_members):
+                """ Parse GTM Virtuals from memberNames"""
+                list_gtm_virtuals = {}
+                for poolName in gtm_members:
+                    list_gtm_virtuals[poolName] = []
+                    for gtm_member in gtm_members[poolName]:
+                        list_gtm_virtuals[poolName].append(gtm_member.split('/Shared/')[1])
+                return list_gtm_virtuals
+
+            def _find_deleted_members(gtm_members,bigip_members):
+                del_gtm_members = {}
+                # Parse GTM Virtuals from memberNames
+                list_gtm_virtuals = _get_virtualNames_from_member(gtm_members)
+
+                # Find all deleted Members from BIGIP for respective Pool
+                for poolName in gtm_members:
+                    del_gtm_members[poolName] = []
+                    for gtm_member in gtm_members[poolName]:
+                        if "ingress_link_" not in gtm_member and poolName in bigip_members:
+                            gtmPoolObj, gtmMemberName = gtm_member.split('/Shared/')
+                            parseSearchStrfromMember = ('_').join(gtmMemberName.split('_')[:-1])
+
+                            extra_bigip_members = list(set(bigip_members[poolName]) - set(list_gtm_virtuals[poolName]))
+                            for bigipPoolMember in extra_bigip_members:
+                                if bigipPoolMember.startswith(parseSearchStrfromMember):
+                                    member = gtmPoolObj + '/Shared/' + bigipPoolMember
+                                    del_gtm_members[poolName].append(member)
+                return del_gtm_members
+
+            gtm = self.gtm()
+            gtm_pools = []
+            for wip in _get_value(gtmConfig, "wideIPs"):
+                gtm_pools += wip["pools"]
+
+            gtm_members, bigip_members = {}, {}
+            # Prepare GTM members from activeConfig and bigip_members from BIGIP based on gtm_members
+            for p in gtm_pools:
+                if p.get("members"):
+                    gtm_members[p['name']] = p["members"]
+                    pool = gtm.pools.a_s.a.load(name=p['name'], partition=partition)
+                    bigip_members[p['name']] = [gtmMember.name for gtmMember in pool.members_s.get_collection()]
+
+            del_gtm_members = _find_deleted_members(gtm_members,bigip_members)
+            try:
+                # Remove Members from BIGIP for respective GTM Pool
+                for poolName in del_gtm_members:
+                    for member in del_gtm_members[poolName]:
+                        log.debug("GTM: Removing member:{} from Pool:{}".format(member, poolName))
+                        self.remove_member_to_gtm_pool(
+                            gtm,
+                            partition,
+                            poolName,
+                            member)
+            except F5CcclError as e:
+                log.error("GTM: Error while removing gtm pool member: %s", e)
+                raise e
+        except F5CcclError as e:
+            log.error("GTM: Error while processing for list of pool members to delete: %s", e)
+            raise e
+
     def create_gtm(self, partition, gtmConfig):
         """ Create GTM object in BIG-IP """
         try:
-            mgmt = self.mgmt_root()
-            gtm = mgmt.tm.gtm
+            gtm = self.gtm()
             if "wideIPs" in gtmConfig[partition]:
                 if gtmConfig[partition]['wideIPs'] is not None:
                     for config in gtmConfig[partition]['wideIPs']:
