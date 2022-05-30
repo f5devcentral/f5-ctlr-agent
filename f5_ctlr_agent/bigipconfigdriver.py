@@ -888,6 +888,10 @@ class GTMManager(object):
             for p in gtm_pools:
                 if p.get("members"):
                     gtm_members[p['name']] = p["members"]
+                    exist = gtm.pools.a_s.a.exists(name=p['name'], partition=partition)
+                    log.debug("Pool: {}, exists: {}".format(p["name"], exist))
+                    if not exist:
+                        continue
                     pool = gtm.pools.a_s.a.load(name=p['name'], partition=partition)
                     bigip_members[p['name']] = [gtmMember.name for gtmMember in pool.members_s.get_collection()]
 
