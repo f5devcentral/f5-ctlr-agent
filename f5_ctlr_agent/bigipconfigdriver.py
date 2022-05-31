@@ -796,7 +796,7 @@ class GTMManager(object):
                             for pool in config['pools']:
                                 # Pool object
                                 newPools[pool['name']] = {
-                                    'name': pool['name'], 'partition': partition, 'ratio': 1
+                                    'name': pool['name'], 'partition': partition, 'ratio': 1, 'order': pool['order']
                                 }
                                 all_monitors = ""
                                 if "monitors" in pool.keys():
@@ -924,7 +924,7 @@ class GTMManager(object):
                         for pool in config['pools']:
                             # Pool object
                             newPools[pool['name']] = {
-                                'name': pool['name'], 'partition': partition, 'ratio': 1
+                                'name': pool['name'], 'partition': partition, 'ratio': 1, 'order': pool['order']
                             }
                             all_monitors = ""
                             if "monitors" in pool.keys():
@@ -953,13 +953,16 @@ class GTMManager(object):
                 log.info('GTM: Creating wideip {}'.format(config['name']))
                 gtm.wideips.a_s.a.create(
                     name=config['name'],
-                    partition=partition, lastResortPool="none")
+                    partition=partition, lastResortPool="none", poolLbMode=config['LoadBalancingMode'])
                 # Attach pool to wideip
                 self.attach_gtm_pool_to_wideip(gtm, config['name'], partition, list(newPools.values()))
             else:
                 wideip = gtm.wideips.a_s.a.load(
                     name=config['name'],
                     partition=partition)
+                if wideip.poolLbMode != config['LoadBalancingMode']:
+                    wideip.poolLbMode = config['LoadBalancingMode']
+                    wideip.update()
                 duplicatePools = []
                 if hasattr(wideip, 'pools'):
                     for p in newPools.keys():
