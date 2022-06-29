@@ -452,6 +452,7 @@ class ConfigHandler():
                                     partition,
                                     newGtmConfig)
                         mgr._gtm.replace_gtm_config(newGtmConfig)
+
                 except F5CcclError as e:
                     # We created an invalid configuration, raise the
                     # exception and fail
@@ -945,7 +946,7 @@ class GTMManager(object):
             log.error("GTM: Error while creating gtm: %s", e)
             raise e
 
-    def create_wideip(self, gtm, partition, config,newPools):
+    def create_wideip(self, gtm, partition, config, newPools):
         """ Create wideip and returns the wideip object """
         try:
             exist = gtm.wideips.a_s.a.exists(name=config['name'], partition=partition)
@@ -1083,6 +1084,9 @@ class GTMManager(object):
                         raise F5CcclError(
                             msg="Virtual Server Resource not Available in BIG-IP")
                 else:
+                    # Delete pool for invalid server config
+                    pool = gtm.pools.a_s.a.load(name=poolName, partition=partition)
+                    pool.delete()
                     raise F5CcclError(msg="Server Resource not Available in BIG-IP")
         except (F5CcclError) as e:
             log.debug("GTM: Error while adding member to pool.")
