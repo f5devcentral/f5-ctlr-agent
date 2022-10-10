@@ -868,7 +868,7 @@ class GTMManager(object):
                 for poolName in gtm_members:
                     del_gtm_members[poolName] = []
                     for gtm_member in gtm_members[poolName]:
-                        if "ingress_link_" not in gtm_member and poolName in bigip_members:
+                        if poolName in bigip_members:
                             gtmPoolObj, gtmMemberName = gtm_member.split('/Shared/')
                             parseSearchStrfromMember = ('_').join(gtmMemberName.split('_')[:-1])
 
@@ -877,6 +877,7 @@ class GTMManager(object):
                                 if bigipPoolMember.startswith(parseSearchStrfromMember):
                                     member = gtmPoolObj + '/Shared/' + bigipPoolMember
                                     del_gtm_members[poolName].append(member)
+                log.debug("Removing these extra gtm pool members: {}".format(gtm_members))
                 return del_gtm_members
 
             gtm = self.gtm()
