@@ -1,3 +1,3 @@
--e git+https://github.com/f5devcentral/f5-cccl.git@fd7282737e8e8315ef2dc45b2ec7ac18a324674e#egg=f5-cccl
+-e git+https://github.com/f5devcentral/f5-cccl.git@126386909bb746aa7eb6ea9575290f6b42401312#egg=f5-cccl
 pyinotify==0.9.6
 requests==2.28.0
