@@ -247,6 +247,9 @@ def create_network_config(config):
         config: BigIP config which contains vxlan defs
     """
     net = {}
+    if ('static-routes' in config and 'routes' in config['static-routes']
+            and config['static-routes']['routes'] is not None):
+        net['routes'] = config['static-routes']['routes']
     if 'vxlan-fdb' in config:
         net['userFdbTunnels'] = [config['vxlan-fdb']]
     if ('vxlan-arp' in config and 'arps' in config['vxlan-arp']
@@ -1613,6 +1616,12 @@ def _handle_vxlan_config(config):
         if 'arps' not in arp:
             raise ConfigError('Configuration file missing '
                               '"vxlan-arp:arps" section')
+
+    if config and 'static-routes' in config:
+        route = config['static-routes']
+        if 'routes' not in route:
+            raise ConfigError('Configuration file missing '
+                              '"static-routes:routes" section')
 
 
 def _set_user_agent(prefix):
