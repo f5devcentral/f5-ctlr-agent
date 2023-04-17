@@ -252,7 +252,8 @@ def create_network_config(config):
         net['routes'] = config['static-routes']['routes']
     if 'vxlan-fdb' in config:
         net['userFdbTunnels'] = [config['vxlan-fdb']]
-    if ('vxlan-arp' in config and 'arps' in config['vxlan-arp']
+    # Add ARPs only if disable-arp is set to false
+    if not _is_arp_disabled(config) and ('vxlan-arp' in config and 'arps' in config['vxlan-arp']
             and config['vxlan-arp']['arps'] is not None):
         net['arps'] = config['vxlan-arp']['arps']
     else:
