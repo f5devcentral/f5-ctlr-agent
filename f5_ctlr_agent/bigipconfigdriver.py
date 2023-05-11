@@ -839,6 +839,7 @@ class GTMManager(object):
                                 # Create GTM pool
                                 self.create_gtm_pool(gtm, partition, config, all_monitors)
                                 # Create Wideip
+                                log.debug("GTM: MSCI def handle_operation_create::create_wideip newPools:{}".format(newPools))
                                 self.create_wideip(gtm, partition, config, newPools)
                             except F5CcclError as e:
                                 raise e
@@ -943,6 +944,7 @@ class GTMManager(object):
                             # Create GTM pool
                             self.create_gtm_pool(gtm, partition, config, all_monitors)
                             # Create Wideip
+                            log.debug("GTM: MSCI create_gtm:create_wideip newPools:{}".format(newPools))
                             self.create_wideip(gtm, partition, config, newPools)
                         except F5CcclError as e:
                             raise e
@@ -975,9 +977,11 @@ class GTMManager(object):
                             duplicatePools.append(p)
 
                 for poolName in duplicatePools:
+                    log.info('GTM: MSCI duplicatePools: {}'.format(poolName))
                     del newPools[poolName]
 
                 if len(newPools) > 0:
+                    log.info('GTM: MSCI More newPools: {}'.format(newPools))
                     self.attach_gtm_pool_to_wideip(
                         gtm,
                         config['name'],
@@ -1028,11 +1032,11 @@ class GTMManager(object):
                 wideip.lastResortPool = "none"
             if hasattr(wideip, 'pools'):
                 wideip.pools.extend(poolObj)
-                log.info('GTM: Attaching Pool: {} to wideip {}'.format(poolObj, name))
+                log.info('GTM: MSCI if pools Attaching Pool: {} to wideip {}'.format(poolObj, name))
                 wideip.update()
             else:
                 wideip.raw['pools'] = poolObj
-                log.info('GTM: Attaching Pool: {} to wideip {}'.format(poolObj, name))
+                log.info('GTM: MSCI else pools Attaching Pool: {} to wideip {}'.format(poolObj, name))
                 wideip.update()
         except F5CcclError as e:
             log.error("GTM: Error while attaching gtm pool to wideip: %s", e)
