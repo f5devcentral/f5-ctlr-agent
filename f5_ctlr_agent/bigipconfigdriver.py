@@ -1029,11 +1029,19 @@ class GTMManager(object):
             if hasattr(wideip, 'pools'):
                 wideip.pools.extend(poolObj)
                 log.info('GTM: Attaching Pool: {} to wideip {}'.format(poolObj, name))
-                wideip.update()
+                try:
+                    wideip.update()
+                except F5CcclError as e:
+                    log.error("GTM: Error while Updating gtm pool to wideip: %s", e)
+                    raise e
             else:
                 wideip.raw['pools'] = poolObj
                 log.info('GTM: Attaching Pool: {} to wideip {}'.format(poolObj, name))
-                wideip.update()
+                try:
+                    wideip.update()
+                except F5CcclError as e:
+                    log.error("GTM: Error while Updating gtm pool to wideip: %s", e)
+                    raise e
         except F5CcclError as e:
             log.error("GTM: Error while attaching gtm pool to wideip: %s", e)
             raise e
@@ -1124,68 +1132,83 @@ class GTMManager(object):
                         partition=partition)
                 if not exist:
                     if monitor['type'] == "http":
-                        gtm.monitor.https.http.create(
-                            name=monitor['name'],
-                            partition=partition,
-                            send=monitor['send'],
-                            recv=monitor['recv'],
-                            interval=monitor['interval'],
-                            timeout=monitor['timeout'])
+                        try:
+                            gtm.monitor.https.http.create(
+                                name=monitor['name'],
+                                partition=partition,
+                                send=monitor['send'],
+                                recv=monitor['recv'],
+                                interval=monitor['interval'],
+                                timeout=monitor['timeout'])
+                        except F5CcclError as e:
+                           log.debug("GTM: Error while creating http Health Monitor: %s", e)
+                           raise e
                     if monitor['type'] == "https":
-                        if self.get_bigip_version() >= 16.1:
-                            gtm.monitor.https_s.https.create(
-                                name=monitor['name'],
-                                partition=partition,
-                                send=monitor['send'],
-                                recv=monitor['recv'],
-                                sniServerName=wideIPName,
-                                interval=monitor['interval'],
-                                timeout=monitor['timeout'])
-                        else:
-                            gtm.monitor.https_s.https.create(
-                                name=monitor['name'],
-                                partition=partition,
-                                send=monitor['send'],
-                                recv=monitor['recv'],
-                                interval=monitor['interval'],
-                                timeout=monitor['timeout'])
-
+                        try:
+                            if self.get_bigip_version() >= 16.1:
+                                gtm.monitor.https_s.https.create(
+                                    name=monitor['name'],
+                                    partition=partition,
+                                    send=monitor['send'],
+                                    recv=monitor['recv'],
+                                    sniServerName=wideIPName,
+                                    interval=monitor['interval'],
+                                    timeout=monitor['timeout'])
+                            else:
+                                gtm.monitor.https_s.https.create(
+                                    name=monitor['name'],
+                                    partition=partition,
+                                    send=monitor['send'],
+                                    recv=monitor['recv'],
+                                    interval=monitor['interval'],
+                                    timeout=monitor['timeout'])
+                        except F5CcclError as e:
+                           log.debug("GTM: Error while creating https Health Monitor: %s", e)
+                           raise e
                     if monitor['type'] == "tcp":
-                        gtm.monitor.tcps.tcp.create(
-                            name=monitor['name'],
-                            partition=partition,
-                            interval=monitor['interval'],
-                            timeout=monitor['timeout'])
+                        try:
+                            gtm.monitor.tcps.tcp.create(
+                                name=monitor['name'],
+                                partition=partition,
+                                interval=monitor['interval'],
+                                timeout=monitor['timeout'])
+                        except F5CcclError as e:
+                           log.debug("GTM: Error while creating tcp Health Monitor: %s", e)
+                           raise e
                 else:
-                    if monitor['type'] == "http":
-                        obj = gtm.monitor.https.http.load(
-                            name=monitor['name'],
-                            partition=partition)
-                        obj.send = monitor['send']
-                        obj.interval = monitor['interval']
-                        obj.timeout = monitor['timeout']
-                        obj.update()
-                        log.info("HTTP Health monitor {} updated.".format(monitor['name']))
-                    if monitor['type'] == "https":
-                        log.info(monitor)
-                        obj = gtm.monitor.https_s.https.load(
-                            name=monitor['name'],
-                            partition=partition)
-                        obj.send = monitor['send']
-                        obj.interval = monitor['interval']
-                        obj.timeout = monitor['timeout']
-                        if self.get_bigip_version() >= 16.1:
-                            obj.sniServerName = wideIPName
-                        obj.update()
-                        log.info("HTTPS Health monitor {} updated.".format(monitor['name']))
-                    if monitor['type'] == "tcp":
-                        log.info(monitor)
-                        obj = gtm.monitor.tcps.tcp.load(
-                            name=monitor['name'],
-                            partition=partition)
-                        obj.interval = monitor['interval']
-                        obj.timeout = monitor['timeout']
-                        obj.update()
+                    try:
+                        if monitor['type'] == "http":
+                            obj = gtm.monitor.https.http.load(
+                                name=monitor['name'],
+                                partition=partition)
+                            obj.send = monitor['send']
+                            obj.interval = monitor['interval']
+                            obj.timeout = monitor['timeout']
+                            obj.update()
+                            log.info("HTTP Health monitor {} updated.".format(monitor['name']))
+                        if monitor['type'] == "https":
+                            log.info(monitor)
+                            obj = gtm.monitor.https_s.https.load(
+                                name=monitor['name'],
+                                partition=partition)
+                            obj.send = monitor['send']
+                            obj.interval = monitor['interval']
+                            obj.timeout = monitor['timeout']
+                            if self.get_bigip_version() >= 16.1:
+                                obj.sniServerName = wideIPName
+                            obj.update()
+                            log.info("HTTPS Health monitor {} updated.".format(monitor['name']))
+                        if monitor['type'] == "tcp":
+                            log.info(monitor)
+                            obj = gtm.monitor.tcps.tcp.load(
+                                name=monitor['name'],
+                                partition=partition)
+                            obj.interval = monitor['interval']
+                            obj.timeout = monitor['timeout']
+                            obj.update()
+                    except F5CcclError as e:
+                        log.debug("GTM: Error while Updating Health Monitor: %s", e)
+                        raise e
         except F5CcclError as e:
             log.debug("GTM: Error while creating Health Monitor: %s", e)
             raise e
