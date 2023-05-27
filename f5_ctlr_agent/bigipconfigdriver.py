@@ -356,7 +356,8 @@ class ConfigHandler():
 
                     # No ARP entries indicate controller is not yet ready
                     # Valid even when there are no resources in cluster mode environment
-                    if not _is_arp_disabled(config) and 'vxlan-arp' not in config and 'vxlan-fdb' in config:
+                    # No FDB entries indicate controller is not yet ready.
+                    if not _is_arp_disabled(config) and ('vxlan-arp' not in config or 'vxlan-fdb' not in config):
                         continue
 
                     incomplete = self._update_cccl(config)
