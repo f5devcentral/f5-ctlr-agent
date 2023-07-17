@@ -360,6 +360,10 @@ class ConfigHandler():
                     if not _is_arp_disabled(config) and ('vxlan-arp' not in config or 'vxlan-fdb' not in config):
                         continue
 
+                    # No route entries indicate controller is not yet ready in static route mode.
+                    if _is_static_routing_enabled(config) and 'static-routes' not in config:
+                        continue
+
                     incomplete = self._update_cccl(config)
 
                 except ValueError:
@@ -1715,6 +1719,11 @@ def _is_gtm_config(config):
     except KeyError:
         return False
 
+def _is_static_routing_enabled(config):
+    try:
+        return config['global']['static-route-mode']
+    except KeyError:
+        return False
 
 def main():
     try:
