@@ -364,6 +364,10 @@ class ConfigHandler():
                     if _is_static_routing_enabled(config) and 'static-routes' not in config:
                         continue
 
+                    # In CIS secondary mode if primary cluster status is up, cccl config
+                    # should not be pushed by secondary CIS
+                    if _is_cis_secondary(config) and _is_primary_cluster_status_up(config):
+                        continue
                     incomplete = self._update_cccl(config)
 
                 except ValueError:
@@ -1725,6 +1729,17 @@ def _is_static_routing_enabled(config):
     except KeyError:
         return False
 
+def _is_cis_secondary(config):
+    try:
+        return config['global']['cis-type'] == "secondary"
+    except KeyError:
+        return False
+
+def _is_primary_cluster_status_up(config):
+    try:
+        return config['primary-cluster-status']
+    except KeyError:
+        return False
 def main():
     try:
         args = _handle_args()
