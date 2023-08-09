@@ -1731,7 +1731,7 @@ def _is_static_routing_enabled(config):
 
 def _is_cis_secondary(config):
     try:
-        return config['global']['cis-type'] == "secondary"
+        return config['global']['multi-cluster-mode'] == "secondary"
     except KeyError:
         return False
 
