@@ -1008,7 +1008,7 @@ class GTMManager(object):
                     log.info('GTM: Creating Pool: {}'.format(pool['name']))
                     pl = gtm.pools.a_s.a.create(
                         name=pool['name'],
-                        partition=partition)
+                        partition=partition,fallbackMode=pool['fallbackMode'],loadBalancingMode=pool['LoadBalancingMode'])
                 else:
                     pl = gtm.pools.a_s.a.load(
                         name=pool['name'],
@@ -1018,6 +1018,14 @@ class GTMManager(object):
                     pl.monitor = monitors
                     pl.update()
                     log.info('Updating monitors {} for pool: {}'.format(monitors, pool['name']))
+                if pl.fallbackMode !=  pool['fallbackMode']:
+                    pl.fallbackMode = pool['fallbackMode']
+                    pl.update()
+                    log.info('Updating fallbackMode {} for pool: {}'.format(pool['fallbackMode'], pool['name']))
+                if pl.loadBalancingMode != pool['LoadBalancingMode']:
+                    pl.loadBalancingMode = pool['LoadBalancingMode']
+                    pl.update()
+                    log.info('Updating loadBalancingMode {} for pool: {}'.format(pool['LoadBalancingMode'], pool['name']))
                 if bool(pool['members']):
                     for member in pool['members']:
                         # Add member to pool
