@@ -178,8 +178,8 @@ class IntervalTimer(object):
         start_time = time.process_time()
         try:
             self._cb()
-        except Exception:
-            log.exception('Unexpected error')
+        except Exception as e:
+            log.exception(f'Unexpected error: {str(e)}')
         finally:
             with self._lock:
                 stop_time = time.process_time()
@@ -376,8 +376,8 @@ class ConfigHandler():
                     log.error('Failed to process the config file {} ({})'
                               .format(self._config_file, last_line))
                     incomplete = 1
-                except Exception:
-                    log.exception('Unexpected error')
+                except Exception as e:
+                    log.exception(f'Unexpected error: {str(e)}')
                     incomplete = 1
 
                 gtmIncomplete = 0
@@ -390,8 +390,8 @@ class ConfigHandler():
                     last_line = formatted_lines[-1]
                     log.error('Failed to process the config file {} ({})'
                               .format(self._config_file, last_line))
-                except Exception:
-                    log.exception('Unexpected error')
+                except Exception as e:
+                    log.exception(f'Unexpected error: {str(e)}')
                     gtmIncomplete = 1
 
                 if incomplete|gtmIncomplete:
@@ -1845,8 +1845,8 @@ def main():
     except (IOError, ValueError, ConfigError) as e:
         log.error(e)
         sys.exit(1)
-    except Exception:
-        log.exception('Unexpected error')
+    except Exception as e:
+        log.exception(f'Unexpected error: {str(e)}')
         sys.exit(1)
 
     return 0
