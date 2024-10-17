@@ -228,7 +228,7 @@ def create_ltm_config(partition, config):
 
     return ltm
 
-def get_gtm_config(partition, config):
+def get_gtm_config(config):
     """Extract a BIG-IP configuration from the GTM configuration.
 
     Args:
@@ -441,7 +441,9 @@ class ConfigHandler():
                 # partition = mgr._gtm.get_partition()
                 partition="Common"
                 try:
-                    newGtmConfig=get_gtm_config(partition,config)
+                    allConfig=get_gtm_config(config)
+                    newGtmConfig = allConfig["config"]
+                    self._deleted_tenants = allConfig["deletedTenants"]
                     mgr._gtm.pre_process_gtm(newGtmConfig)
                     isConfigSame = sorted(oldGtmConfig.items())==sorted(newGtmConfig.items())
                     if not isConfigSame and len(oldGtmConfig)==0:
@@ -456,7 +458,7 @@ class ConfigHandler():
                             # mgr._gtm.delete_update_gtm(
                             #         partition,
                             #         newGtmConfig, newGtmConfig)
-                        mgr._gtm.replace_gtm_config(newGtmConfig)
+                        mgr._gtm.replace_gtm_config(allConfig)
                     elif not isConfigSame:
                         # GTM config is not same
                         log.info("New changes observed in gtm config")
@@ -464,7 +466,7 @@ class ConfigHandler():
                             mgr._gtm.delete_update_gtm(
                                     partition,
                                     newGtmConfig)
-                        mgr._gtm.replace_gtm_config(newGtmConfig)
+                        mgr._gtm.replace_gtm_config(allConfig)
 
                 except F5CcclError as e:
                     # We created an invalid configuration, raise the
@@ -725,6 +727,8 @@ class GTMManager(object):
         self._mgmt_root = bigip
         self._partition = partition
         self._gtm_config = {}
+        self._active_tenants = []
+        self._deleted_tenants = []
         self._gtm = bigip.tm.gtm
 
     def get_gtm_config(self):
@@ -733,7 +737,9 @@ class GTMManager(object):
 
     def replace_gtm_config(self, config):
         """ Updating the GTM config object"""
-        self._gtm_config = config
+        self._active_tenants = config["activeTenants"]
+        self._deleted_tenants = []
+        self._gtm_config = config["config"]
 
     def mgmt_root(self):
         """ Return the BIG-IP ManagementRoot object"""
@@ -1234,6 +1240,9 @@ class GTMManager(object):
     def remove_member_to_gtm_pool(self,gtm,partition,poolName,memberName):
         """ Remove member to gtm pool """
         try:
+            if memberName.split(":")[1].split("/")[1] not in self._active_tenants + self._deleted_tenants:
+                log.debug("GTM: Not removing the pool member %s as it may not be created by this CIS instance", memberName)
+                return
             exist=gtm.pools.a_s.a.exists(name=poolName, partition=partition)
             if exist:
                 pool = gtm.pools.a_s.a.load(name=poolName,partition=partition)
@@ -1279,14 +1288,16 @@ class GTMManager(object):
                                 self._gtm_config[partition]['wideIPs'][index]["pools"][pool_index]['members'] = None
                                 break
                         break
-                self.remove_gtm_pool_to_wideip(gtm,
-                    wideipName,partition,poolName)
                 obj = gtm.pools.a_s.a.load(
                     name=poolName,
                     partition=partition)
-                obj.delete()
-                log.info("Deleted the pool: {}".format(poolName))
-                self._gtm_config[partition]['wideIPs'][index]["pools"].pop(pool_index)
+                # delete the gtm pool and remove the pool from wide ip once there are no pool members attached to it.
+                if  len(obj.members_s.get_collection()) == 0:
+                    self.remove_gtm_pool_to_wideip(gtm,
+                        wideipName,partition,poolName)
+                    obj.delete()
+                    log.info("Deleted the pool: {}".format(poolName))
+                    self._gtm_config[partition]['wideIPs'][index]["pools"].pop(pool_index)
         except F5CcclError as e:
             log.error("GTM: Error while deleting pool: %s", e)
             raise e
