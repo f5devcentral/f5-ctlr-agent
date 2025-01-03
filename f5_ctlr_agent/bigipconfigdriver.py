@@ -16,6 +16,7 @@
 
 
 import argparse
+import base64
 import fcntl
 import hashlib
 import json
@@ -23,6 +24,7 @@ import logging
 import os
 import os.path
 import signal
+import socket
 import sys
 import threading
 import time
@@ -37,6 +39,8 @@ from f5_cccl.utils.mgmt import mgmt_root
 from f5_cccl.utils.profile import (delete_unused_ssl_profiles,
                                    create_client_ssl_profile,
                                    create_server_ssl_profile)
+from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+from cryptography.hazmat.backends import default_backend
 
 from f5.bigip import ManagementRoot
 
@@ -1628,22 +1632,162 @@ def _handle_global_config(config):
     # level only is needed for unit tests
     return verify_interval, level, vxlan_partition
 
+def get_credentials_from_env():
+    """
+    Retrieve credentials from environment variables.
+    Returns:
+        tuple: (username, password) if found, else None.
+    """
+    log.debug("Checking for credentials in environment variables...")
+    username = os.getenv("BIGIP_USERNAME")
+    password = os.getenv("BIGIP_PASSWORD")
+
+    if username and password:
+        log.debug("Credentials found in environment variables.")
+        return username, password
+    else:
+        log.error("Failed to get credentials from environment variables.")
+        return None
+
+
+def get_credentials_from_socket():
+    """
+    Retrieve AES key and encrypted credentials via Unix socket.
+    Returns:
+        dict: Decrypted credentials (e.g., {'username': '...', 'password': '...'})
+    """
+    socket_path = "/tmp/cis_socket"
+    client = None
+
+    try:
+        log.debug(f"Connecting to Unix socket at {socket_path}...")
+        client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        client.connect(socket_path)
+        log.debug("Connection established.")
+
+        # Receive data from the socket
+        data = client.recv(4096)
+        if not data:
+            raise ValueError("No data received from the socket.")
+
+        log.debug("Data received from socket. Decoding JSON payload...")
+        payload = json.loads(data.decode('utf-8'))
+
+        # Validate payload structure
+        if 'key' not in payload or 'encrypted_data' not in payload:
+            raise KeyError("Payload missing 'key' or 'encrypted_data' fields.")
+
+        aes_key = payload['key']
+        encrypted_data = payload['encrypted_data']
+
+        log.debug("AES Key and Encrypted Data extracted from payload.")
+        credentials = decrypt_credentials(encrypted_data, aes_key)
+
+        if credentials:
+            log.debug("Credentials successfully decrypted via socket.")
+            return credentials
+        else:
+            raise ValueError("Failed to decrypt credentials via socket.")
+
+    except (socket.error, ConnectionError) as e:
+        log.error(f"Socket connection error: {e}")
+        log.debug(traceback.format_exc())
+    except json.JSONDecodeError as e:
+        log.error(f"JSON decoding failed: {e}")
+        log.debug(traceback.format_exc())
+    except KeyError as e:
+        log.error(f"Invalid payload structure: {e}")
+        log.debug(traceback.format_exc())
+    except ValueError as e:
+        log.error(f"Value error: {e}")
+        log.debug(traceback.format_exc())
+    except Exception as e:
+        log.error(f"Unexpected exception: {e}")
+        log.debug(traceback.format_exc())
+    finally:
+        if client:
+            client.close()
+            log.debug("Socket connection closed.")
+
+    return {}
+
+
+def get_credentials():
+    """
+    Unified function to retrieve credentials.
+    First tries environment variables, then falls back to Unix socket.
+    Returns:
+        dict: {'username': '...', 'password': '...'}
+    """
+    # Check Environment Variables
+    env_credentials = get_credentials_from_env()
+    if env_credentials:
+        username, password = env_credentials
+        return {'username': username, 'password': password}
+
+    # Fallback to Unix Socket
+    socket_credentials = get_credentials_from_socket()
+    return socket_credentials
+
+
+def decrypt_credentials(encrypted_text: str, key: str) -> dict:
+    """
+    Decrypt encrypted credentials using AES-256-GCM.
+    Args:
+        encrypted_text: Base64-encoded encrypted credentials.
+        key: Base64-encoded AES key.
+    Returns:
+        dict: Decrypted credentials (e.g., {'username': '...', 'password': '...'})
+    """
+    try:
+        # Decode AES key and encrypted text from Base64
+        key = base64.b64decode(key)
+        cipher_text = base64.b64decode(encrypted_text)
+
+        # Extract nonce (first 12 bytes, standard for GCM)
+        nonce_size = 12
+        if len(cipher_text) < nonce_size:
+            raise ValueError("Encrypted text is too short to contain a valid nonce.")
+
+        nonce = cipher_text[:nonce_size]
+        encrypted_payload = cipher_text[nonce_size:]
+
+        # Initialize AES-GCM Cipher
+        cipher = Cipher(algorithms.AES(key), modes.GCM(nonce), backend=default_backend())
+        decryptor = cipher.decryptor()
+
+        # Decrypt the data
+        decrypted_data = decryptor.update(encrypted_payload) + decryptor.finalize()
+        credentials = json.loads(decrypted_data.decode('utf-8'))
+
+        return credentials
+
+    except (ValueError, json.JSONDecodeError) as e:
+        log.error(f"Decryption failed: {e}")
+        log.debug(traceback.format_exc())
+        return {}
+    except Exception as e:
+        log.error(f"Unexpected error during decryption: {e}")
+        log.debug(traceback.format_exc())
+        return {}
+
 
 def _handle_bigip_config(config):
     if (not config) or ('bigip' not in config):
         raise ConfigError('Configuration file missing "bigip" section')
     bigip = config['bigip']
-    if 'username' not in bigip:
-        raise ConfigError('Configuration file missing '
-                          '"bigip:username" section')
-    if 'password' not in bigip:
-        raise ConfigError('Configuration file missing '
-                          '"bigip:password" section')
     if 'url' not in bigip:
         raise ConfigError('Configuration file missing "bigip:url" section')
     if ('partitions' not in bigip) or (len(bigip['partitions']) == 0):
         raise ConfigError('Configuration file must specify at least one '
                           'partition in the "bigip:partitions" section')
+
+    credentials = get_credentials()
+    if credentials:
+        config['bigip']['username'] = credentials.get('username', 'N/A')
+        config['bigip']['password'] = credentials.get('password', 'N/A')
+    else:
+        log.error("Failed to retrieve or decrypt credentials.")
 
     url = urlparse(bigip['url'])
     host = url.hostname
