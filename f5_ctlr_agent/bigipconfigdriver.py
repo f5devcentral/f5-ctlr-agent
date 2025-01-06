@@ -1639,8 +1639,8 @@ def get_credentials_from_env():
         tuple: (username, password) if found, else None.
     """
     log.debug("Checking for credentials in environment variables...")
-    username = os.getenv("BIGIP_USERNAME")
-    password = os.getenv("BIGIP_PASSWORD")
+    username = os.getenv("BIGIP_USERNAME").strip()
+    password = os.getenv("BIGIP_PASSWORD").strip()
 
     if username and password:
         log.debug(f"Credentials found in environment variables. {username}...{password}.")
