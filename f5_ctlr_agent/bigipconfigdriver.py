@@ -1643,7 +1643,7 @@ def get_credentials_from_env():
     password = os.getenv("BIGIP_PASSWORD")
 
     if username and password:
-        log.debug("Credentials found in environment variables.")
+        log.debug(f"Credentials found in environment variables. {username}...{password}.")
         return username, password
     else:
         log.error("Failed to get credentials from environment variables.")
@@ -1786,6 +1786,7 @@ def _handle_bigip_config(config):
     if credentials:
         config['bigip']['username'] = credentials.get('username', 'N/A')
         config['bigip']['password'] = credentials.get('password', 'N/A')
+        log.debug(f"credentials...{config['bigip']['username']}...{config['bigip']['password']}...")
     else:
         log.error("Failed to retrieve or decrypt credentials.")
 
