@@ -1632,6 +1632,24 @@ def _handle_global_config(config):
     # level only is needed for unit tests
     return verify_interval, level, vxlan_partition
 
+def get_credentials():
+    """
+    Unified function to retrieve credentials.
+    First tries environment variables, then falls back to Unix socket.
+    Returns:
+        dict: {'username': '...', 'password': '...'}
+    """
+    # Check Environment Variables
+    env_credentials = get_credentials_from_env()
+    if env_credentials:
+        username, password = env_credentials
+        return {'username': username, 'password': password}
+
+    # Fallback to Unix Socket
+    socket_credentials = get_credentials_from_socket()
+    return socket_credentials
+
+
 def get_credentials_from_env():
     """
     Retrieve credentials from environment variables.
@@ -1656,120 +1674,54 @@ def get_credentials_from_socket():
     Returns:
         dict: Decrypted credentials (e.g., {'username': '...', 'password': '...'})
     """
-    socket_path = "/tmp/cis_socket"
+    socket_path = "/tmp/secure_cis.sock"
     client = None
-
     try:
-        log.debug(f"Connecting to Unix socket at {socket_path}...")
         client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         client.connect(socket_path)
-        log.debug("Connection established.")
+        print("[INFO] Connected to server.")
 
-        # Receive data from the socket
-        data = client.recv(4096)
-        if not data:
-            raise ValueError("No data received from the socket.")
-
-        log.debug("Data received from socket. Decoding JSON payload...")
-        payload = json.loads(data.decode('utf-8'))
-
-        # Validate payload structure
-        if 'key' not in payload or 'encrypted_data' not in payload:
-            raise KeyError("Payload missing 'key' or 'encrypted_data' fields.")
+        data = client.recv(4096).decode('utf-8')
+        payload = json.loads(data)
 
         aes_key = payload['key']
         encrypted_data = payload['encrypted_data']
 
-        log.debug("AES Key and Encrypted Data extracted from payload.")
+        print("[INFO] Data received from server.")
         credentials = decrypt_credentials(encrypted_data, aes_key)
+        print(f"[INFO] Decrypted Credentials: {credentials}")
 
-        if credentials:
-            log.debug("Credentials successfully decrypted via socket.")
-            return credentials
-        else:
-            raise ValueError("Failed to decrypt credentials via socket.")
-
-    except (socket.error, ConnectionError) as e:
-        log.error(f"Socket connection error: {e}")
-        log.debug(traceback.format_exc())
-    except json.JSONDecodeError as e:
-        log.error(f"JSON decoding failed: {e}")
-        log.debug(traceback.format_exc())
-    except KeyError as e:
-        log.error(f"Invalid payload structure: {e}")
-        log.debug(traceback.format_exc())
-    except ValueError as e:
-        log.error(f"Value error: {e}")
-        log.debug(traceback.format_exc())
-    except Exception as e:
-        log.error(f"Unexpected exception: {e}")
-        log.debug(traceback.format_exc())
+    except ConnectionError as e:
+        print(f"[ERROR] Connection failed: {e}")
     finally:
-        if client:
-            client.close()
-            log.debug("Socket connection closed.")
-
-    return {}
-
-def get_credentials():
-    """
-    Unified function to retrieve credentials.
-    First tries environment variables, then falls back to Unix socket.
-    Returns:
-        dict: {'username': '...', 'password': '...'}
-    """
-    # Check Environment Variables
-    env_credentials = get_credentials_from_env()
-    if env_credentials:
-        username, password = env_credentials
-        return {'username': username, 'password': password}
-
-    # Fallback to Unix Socket
-    socket_credentials = get_credentials_from_socket()
-    return socket_credentials
-
+        client.close()
+        print("[INFO] Connection closed.")
 
 def decrypt_credentials(encrypted_text: str, key: str) -> dict:
-    """
-    Decrypt encrypted credentials using AES-256-GCM.
-    Args:
-        encrypted_text: Base64-encoded encrypted credentials.
-        key: Base64-encoded AES key.
-    Returns:
-        dict: Decrypted credentials (e.g., {'username': '...', 'password': '...'})
-    """
     try:
-        # Decode AES key and encrypted text from Base64
-        key = base64.b64decode(key)
-        cipher_text = base64.b64decode(encrypted_text)
+        print("[INFO] Starting decryption...")
 
-        # Extract nonce (first 12 bytes, standard for GCM)
+        key_bytes = base64.b64decode(key)
+        encrypted_payload = base64.b64decode(encrypted_text)
+
         nonce_size = 12
-        if len(cipher_text) < nonce_size:
-            raise ValueError("Encrypted text is too short to contain a valid nonce.")
+        tag_size = 16
 
-        nonce = cipher_text[:nonce_size]
-        encrypted_payload = cipher_text[nonce_size:]
+        nonce = encrypted_payload[:nonce_size]
+        ciphertext = encrypted_payload[nonce_size:-tag_size]
+        tag = encrypted_payload[-tag_size:]
 
-        # Initialize AES-GCM Cipher
-        cipher = Cipher(algorithms.AES(key), modes.GCM(nonce), backend=default_backend())
+        cipher = Cipher(algorithms.AES(key_bytes), modes.GCM(nonce, tag), backend=default_backend())
         decryptor = cipher.decryptor()
+        decrypted_data = decryptor.update(ciphertext) + decryptor.finalize()
 
-        # Decrypt the data
-        decrypted_data = decryptor.update(encrypted_payload) + decryptor.finalize()
         credentials = json.loads(decrypted_data.decode('utf-8'))
-
+        print("[INFO] Decryption successful.")
         return credentials
 
-    except (ValueError, json.JSONDecodeError) as e:
-        log.error(f"Decryption failed: {e}")
-        log.debug(traceback.format_exc())
-        return {}
     except Exception as e:
-        log.error(f"Unexpected error during decryption: {e}")
-        log.debug(traceback.format_exc())
+        print(f"[ERROR] Decryption failed: {e}")
         return {}
-
 
 def _handle_bigip_config(config):
     if (not config) or ('bigip' not in config):
