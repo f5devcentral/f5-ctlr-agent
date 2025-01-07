@@ -1679,7 +1679,7 @@ def get_credentials_from_socket():
     try:
         client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         client.connect(socket_path)
-        print("[INFO] Connected to server.")
+        log.debug("[INFO] Connected to server.")
 
         data = client.recv(4096).decode('utf-8')
         payload = json.loads(data)
@@ -1687,19 +1687,19 @@ def get_credentials_from_socket():
         aes_key = payload['key']
         encrypted_data = payload['encrypted_data']
 
-        print("[INFO] Data received from server.")
+        log.debug("[INFO] Data received from server.")
         credentials = decrypt_credentials(encrypted_data, aes_key)
-        print(f"[INFO] Decrypted Credentials: {credentials}")
+        log.debug(f"[INFO] Decrypted Credentials: {credentials}")
 
     except ConnectionError as e:
-        print(f"[ERROR] Connection failed: {e}")
+        log.error(f"[ERROR] Connection failed: {e}")
     finally:
         client.close()
-        print("[INFO] Connection closed.")
+        log.debug("[INFO] Connection closed.")
 
 def decrypt_credentials(encrypted_text: str, key: str) -> dict:
     try:
-        print("[INFO] Starting decryption...")
+        log.debug("[INFO] Starting decryption...")
 
         key_bytes = base64.b64decode(key)
         encrypted_payload = base64.b64decode(encrypted_text)
@@ -1716,11 +1716,11 @@ def decrypt_credentials(encrypted_text: str, key: str) -> dict:
         decrypted_data = decryptor.update(ciphertext) + decryptor.finalize()
 
         credentials = json.loads(decrypted_data.decode('utf-8'))
-        print("[INFO] Decryption successful.")
+        log.debug("[INFO] Decryption successful.")
         return credentials
 
     except Exception as e:
-        print(f"[ERROR] Decryption failed: {e}")
+        log.error(f"[ERROR] Decryption failed: {e}")
         return {}
 
 def _handle_bigip_config(config):
