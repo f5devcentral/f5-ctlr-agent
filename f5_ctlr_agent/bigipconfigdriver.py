@@ -1639,15 +1639,26 @@ def get_credentials():
     Returns:
         dict: {'username': '...', 'password': '...'}
     """
-    # Check Environment Variables
-    env_credentials = get_credentials_from_env()
-    if env_credentials:
-        username, password = env_credentials
-        return {'username': username, 'password': password}
+    # First check credentials over Unix Socket
+    credentials = get_credentials_from_socket()
+    if credentials:
+        return credentials
 
-    # Fallback to Unix Socket
-    socket_credentials = get_credentials_from_socket()
-    return socket_credentials
+    # Check Environment Variables
+    credential_sources = tuple()
+    if not credentials["bigip_username"]:
+        credential_sources = credential_sources + (('bigip', get_credentials_from_env),)
+
+    if not credentials["gtm_username"]:
+        credential_sources = credential_sources + (('gtm', get_credentials_from_env),)
+
+    credentials = {}
+    for prefix, fetch_func in credential_sources:
+        env_credentials = fetch_func()
+        if env_credentials:
+            username, password = env_credentials
+            credentials[f'{prefix}_username'] = username
+            credentials[f'{prefix}_password'] = password
 
 
 def get_credentials_from_env():
@@ -1667,6 +1678,22 @@ def get_credentials_from_env():
         log.error("Failed to get credentials from environment variables.")
         return None
 
+def get_gtm_credentials_from_env():
+    """
+    Retrieve credentials from environment variables.
+    Returns:
+        tuple: (username, password) if found, else None.
+    """
+    log.debug("Checking for credentials in environment variables...")
+    username = os.getenv("GTM_BIGIP_USERNAME")
+    password = os.getenv("GTM_BIGIP_PASSWORD")
+
+    if username and password:
+        log.debug(f"Credentials found in environment variables. {username}...{password}.")
+        return username, password
+    else:
+        log.error("Failed to get credentials from environment variables.")
+        return None
 
 def get_credentials_from_socket():
     """
@@ -1676,6 +1703,10 @@ def get_credentials_from_socket():
     """
     socket_path = "/tmp/secure_cis.sock"
     client = None
+
+    if not os.path.exists(socket_path):
+        log.error(f"[ERROR] Socket file not found: {socket_path}")
+        return None
     try:
         client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         client.connect(socket_path)
@@ -1731,8 +1762,10 @@ def _handle_bigip_config(config):
 
     credentials = get_credentials()
     if credentials:
-        config['bigip']['username'] = credentials.get('username', 'N/A')
-        config['bigip']['password'] = credentials.get('password', 'N/A')
+        config['bigip']['username'] = credentials.get('bigip_username', 'N/A')
+        config['bigip']['password'] = credentials.get('bigip_password', 'N/A')
+        config['gtm_bigip']['username'] = credentials.get('gtm_username', 'N/A')
+        config['gtm_bigip']['password'] = credentials.get('gtm_password', 'N/A')
         log.debug(f"credentials...{config['bigip']['username']}...{config['bigip']['password']}...")
     else:
         log.error("Failed to retrieve or decrypt credentials.")
@@ -1890,12 +1923,6 @@ def main():
             if not port:
                 port = 443
             try:
-                crdentials = get_credentials()
-                if credentials:
-                    config['gtm_bigip']['username'] = credentials.get('username', 'N/A')
-                    config['gtm_bigip']['password'] = credentials.get('password', 'N/A')
-                else:
-                    log.error("Failed to retrieve or decrypt credentials.")
                 bigip = mgmt_root(
                     host,
                     config['gtm_bigip']['username'],
