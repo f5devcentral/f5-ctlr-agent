@@ -1687,20 +1687,16 @@ def get_credentials_from_socket():
         aes_key = payload['key']
         encrypted_data = payload['encrypted_data']
 
-        log.debug("[INFO] Data received from server.")
         credentials = decrypt_credentials(encrypted_data, aes_key)
-        log.debug(f"[INFO] Decrypted Credentials: {credentials}")
+        return credentials
 
     except ConnectionError as e:
         log.error(f"[ERROR] Connection failed: {e}")
     finally:
         client.close()
-        log.debug("[INFO] Connection closed.")
 
 def decrypt_credentials(encrypted_text: str, key: str) -> dict:
     try:
-        log.debug("[INFO] Starting decryption...")
-
         key_bytes = base64.b64decode(key)
         encrypted_payload = base64.b64decode(encrypted_text)
 
@@ -1894,6 +1890,12 @@ def main():
             if not port:
                 port = 443
             try:
+                crdentials = get_credentials()
+                if credentials:
+                    config['gtm_bigip']['username'] = credentials.get('username', 'N/A')
+                    config['gtm_bigip']['password'] = credentials.get('password', 'N/A')
+                else:
+                    log.error("Failed to retrieve or decrypt credentials.")
                 bigip = mgmt_root(
                     host,
                     config['gtm_bigip']['username'],
