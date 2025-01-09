@@ -1764,8 +1764,9 @@ def _handle_bigip_config(config):
     if credentials:
         config['bigip']['username'] = credentials.get('bigip_username', 'N/A')
         config['bigip']['password'] = credentials.get('bigip_password', 'N/A')
-        config['gtm_bigip']['username'] = credentials.get('gtm_username', 'N/A')
-        config['gtm_bigip']['password'] = credentials.get('gtm_password', 'N/A')
+        if config['gtm_bigip']:
+            config['gtm_bigip']['username'] = credentials.get('gtm_username', 'N/A')
+            config['gtm_bigip']['password'] = credentials.get('gtm_password', 'N/A')
         log.debug(f"credentials...{config['bigip']['username']}...{config['bigip']['password']}...")
     else:
         log.error("Failed to retrieve or decrypt credentials.")
