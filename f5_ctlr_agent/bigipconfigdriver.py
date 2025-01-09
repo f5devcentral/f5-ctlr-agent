@@ -1743,7 +1743,7 @@ def decrypt_credentials(encrypted_text: str, key: str) -> dict:
         decrypted_data = decryptor.update(ciphertext) + decryptor.finalize()
 
         credentials = json.loads(decrypted_data.decode('utf-8'))
-        log.debug("[INFO] Decryption successful.")
+        log.debug("Credentials Decryption successful.")
         return credentials
 
     except Exception as e:
@@ -1767,7 +1767,6 @@ def _handle_bigip_config(config):
         if 'gtm_config' in config:
             config['gtm_bigip']['username'] = credentials.get('gtm_username', 'N/A')
             config['gtm_bigip']['password'] = credentials.get('gtm_password', 'N/A')
-        log.debug(f"credentials...{config['bigip']['username']}...{config['bigip']['password']}...")
     else:
         log.error("Failed to retrieve or decrypt credentials.")
 
