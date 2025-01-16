@@ -1635,7 +1635,7 @@ def _handle_global_config(config):
 def get_credentials():
     """
     Unified function to retrieve credentials.
-    First tries environment variables, then falls back to Unix socket.
+    First tries Unix socket, then falls back to environment variables.
     Returns:
         dict: {'username': '...', 'password': '...'}
     """
