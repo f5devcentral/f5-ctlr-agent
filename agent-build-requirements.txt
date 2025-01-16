@@ -5,3 +5,5 @@ flake8==3.4.1
 pytest-cov==2.5.1
 coveralls==1.1
 bandit==1.4.0
+cryptography>=42.0.0
+
