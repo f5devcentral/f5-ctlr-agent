@@ -16,7 +16,6 @@
 
 
 import argparse
-import base64
 import fcntl
 import hashlib
 import json
@@ -24,7 +23,6 @@ import logging
 import os
 import os.path
 import signal
-import socket
 import sys
 import threading
 import time
@@ -39,8 +37,6 @@ from f5_cccl.utils.mgmt import mgmt_root
 from f5_cccl.utils.profile import (delete_unused_ssl_profiles,
                                    create_client_ssl_profile,
                                    create_server_ssl_profile)
-from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
-from cryptography.hazmat.backends import default_backend
 
 from f5.bigip import ManagementRoot
 
@@ -254,8 +250,6 @@ def create_network_config(config):
     if ('static-routes' in config and 'routes' in config['static-routes']
             and config['static-routes']['routes'] is not None):
         net['routes'] = config['static-routes']['routes']
-        if 'cis-identifier' in config['static-routes']:
-            net['cis-identifier'] = config['static-routes']['cis-identifier']
     if 'vxlan-fdb' in config:
         net['userFdbTunnels'] = [config['vxlan-fdb']]
     # Add ARPs only if disable-arp is set to false
@@ -1634,143 +1628,22 @@ def _handle_global_config(config):
     # level only is needed for unit tests
     return verify_interval, level, vxlan_partition
 
-def get_credentials():
-    """
-    Unified function to retrieve credentials.
-    First tries Unix socket, then falls back to environment variables.
-    Returns:
-        dict: {'username': '...', 'password': '...'}
-    """
-    # First check credentials over Unix Socket
-    credentials = get_credentials_from_socket()
-    if credentials:
-        return credentials
-
-    # Check Environment Variables
-    credential_sources = tuple()
-    if not credentials or  not credentials["bigip_username"]:
-        credential_sources = credential_sources + (('bigip', get_credentials_from_env),)
-
-    if not credentials or not credentials["gtm_username"]:
-        credential_sources = credential_sources + (('gtm', get_credentials_from_env),)
-
-    credentials = {}
-    for prefix, fetch_func in credential_sources:
-        env_credentials = fetch_func()
-        if env_credentials:
-            username, password = env_credentials
-            credentials[f'{prefix}_username'] = username
-            credentials[f'{prefix}_password'] = password
-
-
-def get_credentials_from_env():
-    """
-    Retrieve credentials from environment variables.
-    Returns:
-        tuple: (username, password) if found, else None.
-    """
-    log.debug("Checking for credentials in environment variables...")
-    username = os.getenv("BIGIP_USERNAME")
-    password = os.getenv("BIGIP_PASSWORD")
-
-    if username and password:
-        log.debug(f"Credentials found in environment variables. {username}...{password}.")
-        return username, password
-    else:
-        log.error("Failed to get credentials from environment variables.")
-        return None
-
-def get_gtm_credentials_from_env():
-    """
-    Retrieve credentials from environment variables.
-    Returns:
-        tuple: (username, password) if found, else None.
-    """
-    log.debug("Checking for credentials in environment variables...")
-    username = os.getenv("GTM_BIGIP_USERNAME")
-    password = os.getenv("GTM_BIGIP_PASSWORD")
-
-    if username and password:
-        log.debug(f"Credentials found in environment variables. {username}...{password}.")
-        return username, password
-    else:
-        log.error("Failed to get credentials from environment variables.")
-        return None
-
-def get_credentials_from_socket():
-    """
-    Retrieve AES key and encrypted credentials via Unix socket.
-    Returns:
-        dict: Decrypted credentials (e.g., {'username': '...', 'password': '...'})
-    """
-    socket_path = "/tmp/secure_cis.sock"
-    client = None
-
-    if not os.path.exists(socket_path):
-        log.error(f"[ERROR] Socket file not found: {socket_path}")
-        return None
-    try:
-        client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        client.connect(socket_path)
-        log.debug("[INFO] Connected to server.")
-
-        data = client.recv(4096).decode('utf-8')
-        payload = json.loads(data)
-
-        aes_key = payload['key']
-        encrypted_data = payload['encrypted_data']
-
-        credentials = decrypt_credentials(encrypted_data, aes_key)
-        return credentials
-
-    except ConnectionError as e:
-        log.error(f"[ERROR] Connection failed: {e}")
-    finally:
-        client.close()
-
-def decrypt_credentials(encrypted_text: str, key: str) -> dict:
-    try:
-        key_bytes = base64.b64decode(key)
-        encrypted_payload = base64.b64decode(encrypted_text)
-
-        nonce_size = 12
-        tag_size = 16
-
-        nonce = encrypted_payload[:nonce_size]
-        ciphertext = encrypted_payload[nonce_size:-tag_size]
-        tag = encrypted_payload[-tag_size:]
-
-        cipher = Cipher(algorithms.AES(key_bytes), modes.GCM(nonce, tag), backend=default_backend())
-        decryptor = cipher.decryptor()
-        decrypted_data = decryptor.update(ciphertext) + decryptor.finalize()
-
-        credentials = json.loads(decrypted_data.decode('utf-8'))
-        log.debug("Credentials Decryption successful.")
-        return credentials
-
-    except Exception as e:
-        log.error(f"[ERROR] Decryption failed: {e}")
-        return {}
 
 def _handle_bigip_config(config):
     if (not config) or ('bigip' not in config):
         raise ConfigError('Configuration file missing "bigip" section')
     bigip = config['bigip']
+    if 'username' not in bigip:
+        raise ConfigError('Configuration file missing '
+                          '"bigip:username" section')
+    if 'password' not in bigip:
+        raise ConfigError('Configuration file missing '
+                          '"bigip:password" section')
     if 'url' not in bigip:
         raise ConfigError('Configuration file missing "bigip:url" section')
     if ('partitions' not in bigip) or (len(bigip['partitions']) == 0):
         raise ConfigError('Configuration file must specify at least one '
                           'partition in the "bigip:partitions" section')
-
-    credentials = get_credentials()
-    if credentials:
-        config['bigip']['username'] = credentials.get('bigip_username', 'N/A')
-        config['bigip']['password'] = credentials.get('bigip_password', 'N/A')
-        if 'gtm_config' in config:
-            config['gtm_bigip']['username'] = credentials.get('gtm_username', 'N/A')
-            config['gtm_bigip']['password'] = credentials.get('gtm_password', 'N/A')
-    else:
-        log.error("Failed to retrieve or decrypt credentials.")
 
     url = urlparse(bigip['url'])
     host = url.hostname
