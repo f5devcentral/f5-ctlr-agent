@@ -250,6 +250,8 @@ def create_network_config(config):
     if ('static-routes' in config and 'routes' in config['static-routes']
             and config['static-routes']['routes'] is not None):
         net['routes'] = config['static-routes']['routes']
+        if 'cis-identifier' in config['static-routes']:
+            net['cis-identifier'] = config['static-routes']['cis-identifier']
     if 'vxlan-fdb' in config:
         net['userFdbTunnels'] = [config['vxlan-fdb']]
     # Add ARPs only if disable-arp is set to false
