@@ -444,31 +444,32 @@ class ConfigHandler():
                 partition="Common"
                 try:
                     allConfig=get_gtm_config(config)
-                    newGtmConfig = allConfig["config"]
-                    self._deleted_tenants = allConfig["deletedTenants"]
-                    mgr._gtm.pre_process_gtm(newGtmConfig)
-                    isConfigSame = sorted(oldGtmConfig.items())==sorted(newGtmConfig.items())
-                    if not isConfigSame and len(oldGtmConfig)==0:
-                        # GTM config is not same and for
-                        # first time gtm config updates
-                        if partition in newGtmConfig:
-                            #Remove unused GTM PoolMembers from BIGIP created by CIS <= v2.7.1
-                            mgr._gtm.remove_unused_poolmembers(partition, newGtmConfig[partition])
-                            mgr._gtm.create_gtm(
-                                    partition,
-                                    newGtmConfig)
-                            # mgr._gtm.delete_update_gtm(
-                            #         partition,
-                            #         newGtmConfig, newGtmConfig)
-                        mgr._gtm.replace_gtm_config(allConfig)
-                    elif not isConfigSame:
-                        # GTM config is not same
-                        log.info("New changes observed in gtm config")
-                        if partition in newGtmConfig:
-                            mgr._gtm.delete_update_gtm(
-                                    partition,
-                                    newGtmConfig)
-                        mgr._gtm.replace_gtm_config(allConfig)
+                    if not bool(allConfig):
+                        newGtmConfig = allConfig["config"]
+                        self._deleted_tenants = allConfig["deletedTenants"]
+                        mgr._gtm.pre_process_gtm(newGtmConfig)
+                        isConfigSame = sorted(oldGtmConfig.items())==sorted(newGtmConfig.items())
+                        if not isConfigSame and len(oldGtmConfig)==0:
+                            # GTM config is not same and for
+                            # first time gtm config updates
+                            if partition in newGtmConfig:
+                                #Remove unused GTM PoolMembers from BIGIP created by CIS <= v2.7.1
+                                mgr._gtm.remove_unused_poolmembers(partition, newGtmConfig[partition])
+                                mgr._gtm.create_gtm(
+                                        partition,
+                                        newGtmConfig)
+                                # mgr._gtm.delete_update_gtm(
+                                #         partition,
+                                #         newGtmConfig, newGtmConfig)
+                            mgr._gtm.replace_gtm_config(allConfig)
+                        elif not isConfigSame:
+                            # GTM config is not same
+                            log.info("New changes observed in gtm config")
+                            if partition in newGtmConfig:
+                                mgr._gtm.delete_update_gtm(
+                                        partition,
+                                        newGtmConfig)
+                            mgr._gtm.replace_gtm_config(allConfig)
 
                 except F5CcclError as e:
                     # We created an invalid configuration, raise the
