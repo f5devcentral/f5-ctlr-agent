@@ -23,6 +23,7 @@ import logging
 import os
 import os.path
 import signal
+import socket
 import sys
 import threading
 import time
@@ -444,7 +445,7 @@ class ConfigHandler():
                 partition="Common"
                 try:
                     allConfig=get_gtm_config(config)
-                    if not bool(allConfig):
+                    if bool(allConfig):
                         newGtmConfig = allConfig["config"]
                         self._deleted_tenants = allConfig["deletedTenants"]
                         mgr._gtm.pre_process_gtm(newGtmConfig)
@@ -1631,22 +1632,120 @@ def _handle_global_config(config):
     # level only is needed for unit tests
     return verify_interval, level, vxlan_partition
 
+def get_credentials():
+    """
+    Unified function to retrieve credentials.
+    First tries Unix socket, then falls back to environment variables.
+    Returns:
+        dict: {'username': '...', 'password': '...'}
+    """
+    # First check credentials over Unix Socket
+    credentials = get_credentials_from_socket()
+    if credentials:
+        return credentials
+
+    # Check Environment Variables
+    credential_sources = tuple()
+    if not credentials or not credentials["bigip_username"]:
+        credential_sources = credential_sources + (('bigip', get_credentials_from_env),)
+
+    if not credentials or not credentials["gtm_username"]:
+        credential_sources = credential_sources + (('gtm', get_gtm_credentials_from_env),)
+
+    credentials = {}
+    for prefix, fetch_func in credential_sources:
+        env_credentials = fetch_func()
+        if env_credentials:
+            username, password = env_credentials
+            credentials[f'{prefix}_username'] = username
+            credentials[f'{prefix}_password'] = password
+
+    if not credentials["gtm_username"] or credentials["gtm_username"] == "":
+        credentials["gtm_username"] = credentials["bigip_username"]
+    if not credentials["gtm_password"] or credentials["gtm_password"] == "":
+        credentials["gtm_password"] = credentials["bigip_password"]
+
+    return credentials
+
+
+def get_credentials_from_env():
+    """
+    Retrieve credentials from environment variables.
+    Returns:
+        tuple: (username, password) if found, else None.
+    """
+    log.debug("Checking for credentials in environment variables...")
+    username = os.getenv("BIGIP_USERNAME")
+    password = os.getenv("BIGIP_PASSWORD")
+
+    if username and password:
+        log.info("successfully fetched BIGIP credentials from environment variables.")
+        return username, password
+    else:
+        log.error("Failed to get BIGIP credentials from environment variables.")
+        return None
+
+def get_gtm_credentials_from_env():
+    """
+    Retrieve credentials from environment variables.
+    Returns:
+        tuple: (username, password) if found, else None.
+    """
+    log.debug("Checking for GTM credentials in environment variables...")
+    username = os.getenv("GTM_BIGIP_USERNAME")
+    password = os.getenv("GTM_BIGIP_PASSWORD")
+
+    if username and password:
+        log.info("successfully fetched GTM credentials from environment variables.")
+        return username, password
+    else:
+        log.error("Failed to get GTM credentials from environment variables.")
+        return None
+
+def get_credentials_from_socket():
+    socket_path = "/tmp/secure_cis.sock"
+    client = None
+
+    if not os.path.exists(socket_path):
+        log.error(f"Socket file not found: {socket_path}")
+        return None
+    try:
+        client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        client.connect(socket_path)
+        log.info("Connected to server.")
+
+        data = client.recv(4096).decode('utf-8')
+        credentials = json.loads(data)
+        if credentials:
+            if credentials.get('bigip_username', '') != "" and credentials.get('bigip_password', '') != "":
+                log.info("successfully fetched BIGIP credentials from socket.")
+            if credentials.get('gtm_username', '') != "" and credentials.get('gtm_password', '') != "":
+                log.info("successfully fetched GTM credentials from socket.")
+        return credentials
+
+    except ConnectionError as e:
+        log.error(f"Connection failed: {e}")
+    finally:
+        client.close()
+
+
 
 def _handle_bigip_config(config):
     if (not config) or ('bigip' not in config):
         raise ConfigError('Configuration file missing "bigip" section')
     bigip = config['bigip']
-    if 'username' not in bigip:
-        raise ConfigError('Configuration file missing '
-                          '"bigip:username" section')
-    if 'password' not in bigip:
-        raise ConfigError('Configuration file missing '
-                          '"bigip:password" section')
     if 'url' not in bigip:
         raise ConfigError('Configuration file missing "bigip:url" section')
     if ('partitions' not in bigip) or (len(bigip['partitions']) == 0):
         raise ConfigError('Configuration file must specify at least one '
                           'partition in the "bigip:partitions" section')
+
+    if 'username' not in config['bigip']:
+        raise ConfigError('missing config '
+                          '"bigip:username" section')
+    if 'password' not in config['bigip']:
+        raise ConfigError('missing config '
+                          '"bigip:password" section')
 
     url = urlparse(bigip['url'])
     host = url.hostname
@@ -1655,6 +1754,18 @@ def _handle_bigip_config(config):
         port = 443
 
     return host, port
+
+def _handle_credentials(config):
+    credentials = get_credentials()
+    if credentials:
+        config['bigip']['username'] = credentials.get('bigip_username', '')
+        config['bigip']['password'] = credentials.get('bigip_password', '')
+        if 'gtm_bigip' in config:
+            config['gtm_bigip']['username'] = credentials.get('gtm_username', '')
+            config['gtm_bigip']['password'] = credentials.get('gtm_password', '')
+    else:
+        log.error("Failed to retrieve credentials.")
+    return config
 
 
 def _handle_vxlan_config(config):
@@ -1768,6 +1879,7 @@ def main():
 
         config = _parse_config(args.config_file)
         verify_interval, _, vxlan_partition = _handle_global_config(config)
+        config = _handle_credentials(config)
         host, port = _handle_bigip_config(config)
 
         # FIXME (kenr): Big-IP settings are currently static (we ignore any
