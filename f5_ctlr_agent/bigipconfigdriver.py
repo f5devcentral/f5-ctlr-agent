@@ -445,6 +445,7 @@ class ConfigHandler():
                 partition="Common"
                 try:
                     allConfig=get_gtm_config(config)
+                    # process gtm config if present
                     if bool(allConfig):
                         newGtmConfig = allConfig["config"]
                         self._deleted_tenants = allConfig["deletedTenants"]
