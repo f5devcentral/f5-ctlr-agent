@@ -1646,10 +1646,10 @@ def get_credentials():
 
     # Check Environment Variables
     credential_sources = tuple()
-    if not credentials or not credentials["bigip_username"]:
+    if not credentials or not credentials.get("bigip_username", ""):
         credential_sources = credential_sources + (('bigip', get_credentials_from_env),)
 
-    if not credentials or not credentials["gtm_username"]:
+    if not credentials or not credentials.get("gtm_username", ""):
         credential_sources = credential_sources + (('gtm', get_gtm_credentials_from_env),)
 
     credentials = {}
@@ -1660,9 +1660,9 @@ def get_credentials():
             credentials[f'{prefix}_username'] = username
             credentials[f'{prefix}_password'] = password
 
-    if not credentials["gtm_username"] or credentials["gtm_username"] == "":
+    if not credentials.get("gtm_username", ""):
         credentials["gtm_username"] = credentials["bigip_username"]
-    if not credentials["gtm_password"] or credentials["gtm_password"] == "":
+    if not credentials.get("gtm_password", ""):
         credentials["gtm_password"] = credentials["bigip_password"]
 
     return credentials
