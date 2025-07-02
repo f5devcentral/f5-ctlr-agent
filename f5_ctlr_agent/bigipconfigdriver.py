@@ -42,6 +42,7 @@ from f5_cccl.utils.profile import (delete_unused_ssl_profiles,
 from f5.bigip import ManagementRoot
 
 log = logging.getLogger(__name__)
+log.propagate = False
 console = logging.StreamHandler()
 console.setFormatter(
     logging.Formatter("[%(asctime)s %(name)s %(levelname)s] %(message)s"))
@@ -545,7 +546,7 @@ class ConfigHandler():
         self._backoff_timer = threading.Timer(
             self._backoff_time, timer_cb
         )
-        log.error("Error applying config, will try again in %s seconds",
+        log.error("[ctrl agent] Error applying config, will try again in %s seconds",
                   self._backoff_time)
         self._backoff_timer.start()
         if self._backoff_time < self._max_backoff_time:
