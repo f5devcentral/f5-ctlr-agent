@@ -372,6 +372,12 @@ class ConfigHandler():
                     # should not be pushed by secondary CIS
                     if _is_cis_secondary(config) and _is_primary_cluster_status_up(config):
                         continue
+
+                    # In CIS arbitrator mode, cccl config should not be pushed by arbitrator CIS
+                    # if its not the active leader
+                    if _is_cis_in_arbitrator_mode(config) and not _is_leader(config):
+                        log.debug("CIS in arbitrator mode and not the leader, skipping cccl config push")
+                        continue
                     incomplete = self._update_cccl(config)
 
                 except ValueError:
@@ -1869,6 +1875,18 @@ def _is_cis_secondary(config):
     except KeyError:
         return False
 
+def _is_cis_in_arbitrator_mode(config):
+    try:
+        return config['global']['multi-cluster-mode'] == "arbitrator"
+    except KeyError:
+        return False
+
+def _is_leader(config):
+    try:
+        return config['is-leader']
+    except KeyError:
+        return False
+    
 def _is_primary_cluster_status_up(config):
     try:
         return config['primary-cluster-status']
