@@ -1475,6 +1475,14 @@ def _handle_credentials(config):
         if 'gtm_bigip' in config:
             config['gtm_bigip']['username'] = credentials.get('gtm_username', '')
             config['gtm_bigip']['password'] = credentials.get('gtm_password', '')
+        # Pass trusted certificates (PEM bundle) through config so that
+        # create_ltm_manager / create_gtm_manager can configure TLS verification.
+        trusted_certs = credentials.get('trusted_certs', '')
+        if trusted_certs:
+            config['bigip']['trusted_certs'] = trusted_certs
+            if 'gtm_bigip' in config:
+                config['gtm_bigip']['trusted_certs'] = trusted_certs
+            log.info("Trusted certificate(s) received via socket for TLS verification.")
     else:
         log.error("Failed to retrieve credentials.")
     return config
@@ -1616,6 +1624,7 @@ def main():
         host, port = _handle_bigip_config(config)
 
         # BIG-IP to manage
+        bigip_trusted_certs = config['bigip'].get('trusted_certs', '')
         def _bigip_connect_cb(log_success):
             try:
                 bigip = mgmt_root(
@@ -1623,7 +1632,8 @@ def main():
                     config['bigip']['username'],
                     config['bigip']['password'],
                     port,
-                    "tmos")
+                    "tmos",
+                    trusted_certs=bigip_trusted_certs)
                 if log_success:
                     log.info('BIG-IP connection established.')
                 return (True, bigip)
@@ -1634,6 +1644,7 @@ def main():
         user_agent = _set_user_agent(args.ctlr_prefix)
 
         # GTM BIG-IP to manage
+        gtm_trusted_certs = config.get('gtm_bigip', {}).get('trusted_certs', '')
         def _gtmbigip_connect_cb(log_success):
             url = urlparse(config['gtm_bigip']['url'])
             host = url.hostname
@@ -1646,7 +1657,8 @@ def main():
                     config['gtm_bigip']['username'],
                     config['gtm_bigip']['password'],
                     port,
-                    "tmos")
+                    "tmos",
+                    trusted_certs=gtm_trusted_certs)
                 if log_success:
                     log.info('GTM BIG-IP connection established.')
                 return (True, bigip)
