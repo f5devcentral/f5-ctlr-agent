@@ -1402,29 +1402,30 @@ def get_credentials(socket_path=None):
     Args:
         socket_path: Optional custom Unix socket path.
     """
-    credentials = get_credentials_from_socket(socket_path)
-    if credentials:
-        return credentials
+    credentials = get_credentials_from_socket(socket_path) or {}
 
-    credential_sources = tuple()
-    if not credentials or not credentials.get("bigip_username", ""):
-        credential_sources = credential_sources + (('bigip', get_credentials_from_env),)
-
-    if not credentials or not credentials.get("gtm_username", ""):
-        credential_sources = credential_sources + (('gtm', get_gtm_credentials_from_env),)
-
-    credentials = {}
-    for prefix, fetch_func in credential_sources:
-        env_credentials = fetch_func()
+    if not credentials.get("bigip_username", "") or not credentials.get("bigip_password", ""):
+        env_credentials = get_credentials_from_env()
         if env_credentials:
             username, password = env_credentials
-            credentials[f'{prefix}_username'] = username
-            credentials[f'{prefix}_password'] = password
+            credentials['bigip_username'] = username
+            credentials['bigip_password'] = password
+
+    if not credentials.get("gtm_username", "") or not credentials.get("gtm_password", ""):
+        gtm_env_credentials = get_gtm_credentials_from_env()
+        if gtm_env_credentials:
+            username, password = gtm_env_credentials
+            credentials['gtm_username'] = username
+            credentials['gtm_password'] = password
 
     if not credentials.get("gtm_username", ""):
         credentials["gtm_username"] = credentials.get("bigip_username", "")
     if not credentials.get("gtm_password", ""):
         credentials["gtm_password"] = credentials.get("bigip_password", "")
+
+    if not credentials.get("bigip_username", "") or not credentials.get("bigip_password", ""):
+        log.error("No valid BIGIP credentials could be obtained from socket or environment variables.")
+        return None
 
     return credentials
 
@@ -1460,30 +1461,58 @@ def get_credentials_from_socket(socket_path=None):
         socket_path = "/tmp/secure_cis.sock"
 
     client = None
+    retry_interval = 0.5
+    max_wait_seconds = 10.0
 
-    if not os.path.exists(socket_path):
-        log.error(f"Socket file not found: {socket_path}")
-        return None
-    try:
-        client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        client.connect(socket_path)
-        log.info("Connected to server.")
+    start_time = time.time()
+    waiting_logged = False
+    while not os.path.exists(socket_path):
+        elapsed = time.time() - start_time
+        if elapsed >= max_wait_seconds:
+            log.error(
+                f"Socket file not found after {max_wait_seconds}s: {socket_path}")
+            return None
+        if not waiting_logged:
+            log.info(f"Waiting for credential socket: {socket_path}")
+            waiting_logged = True
+        time.sleep(retry_interval)
 
-        data = client.recv(4096).decode('utf-8')
-        credentials = json.loads(data)
-        if credentials:
-            if credentials.get('bigip_username', '') != "" and credentials.get('bigip_password', '') != "":
-                log.info("successfully fetched BIGIP credentials from socket.")
-            if credentials.get('gtm_username', '') != "" and credentials.get('gtm_password', '') != "":
-                log.info("successfully fetched GTM credentials from socket.")
-        return credentials
+    last_error = None
+    connect_attempts = int(max_wait_seconds / retry_interval)
+    for attempt in range(connect_attempts):
+        try:
+            client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            client.settimeout(5.0)
+            client.connect(socket_path)
 
-    except (ConnectionError, OSError, json.JSONDecodeError) as e:
-        log.error(f"Connection failed: {e}")
-        return None
-    finally:
-        if client:
-            client.close()
+            data = client.recv(4096).decode('utf-8')
+            credentials = json.loads(data)
+            if credentials:
+                if credentials.get('bigip_username', '') != "" and credentials.get('bigip_password', '') != "":
+                    log.info("successfully fetched BIGIP credentials from socket.")
+                if credentials.get('gtm_username', '') != "" and credentials.get('gtm_password', '') != "":
+                    log.info("successfully fetched GTM credentials from socket.")
+            return credentials
+
+        except (ConnectionRefusedError, FileNotFoundError) as e:
+            last_error = e
+            log.debug(
+                "Credential socket not ready yet on attempt %s/%s: %s",
+                attempt + 1,
+                connect_attempts,
+                e)
+            time.sleep(retry_interval)
+        except (ConnectionError, OSError, socket.timeout, json.JSONDecodeError, ValueError) as e:
+            log.error(f"Connection failed: {e}")
+            return None
+        finally:
+            if client:
+                client.close()
+                client = None
+
+    log.error(
+        f"Could not connect to credential socket after {max_wait_seconds}s: {last_error}")
+    return None
 
 
 def _handle_bigip_config(config):
@@ -1515,14 +1544,16 @@ def _handle_bigip_config(config):
 def _handle_credentials(config):
     credential_socket = config.get('credential_socket', '/tmp/secure_cis.sock')
     credentials = get_credentials(credential_socket)
-    if credentials:
-        config['bigip']['username'] = credentials.get('bigip_username', '')
-        config['bigip']['password'] = credentials.get('bigip_password', '')
-        if 'gtm_bigip' in config:
-            config['gtm_bigip']['username'] = credentials.get('gtm_username', '')
-            config['gtm_bigip']['password'] = credentials.get('gtm_password', '')
-    else:
-        log.error("Failed to retrieve credentials.")
+    if not credentials:
+        raise ConfigError('Failed to retrieve valid BIG-IP credentials')
+
+    config['bigip']['username'] = credentials['bigip_username']
+    config['bigip']['password'] = credentials['bigip_password']
+    if 'gtm_bigip' in config:
+        config['gtm_bigip']['username'] = credentials.get(
+            'gtm_username', credentials['bigip_username'])
+        config['gtm_bigip']['password'] = credentials.get(
+            'gtm_password', credentials['bigip_password'])
     return config
 
 
@@ -1562,6 +1593,28 @@ def _set_user_agent(prefix):
     return user_agent
 
 
+def _is_non_retryable_error(error_message):
+    """Return True when an error indicates permanent auth failure."""
+    if not error_message:
+        return False
+
+    msg = str(error_message).lower()
+    if '401' in msg or '403' in msg:
+        return True
+
+    # Some platforms return 400 for auth payload/cookie validation errors.
+    if '400' in msg:
+        auth_markers = (
+            'authorization',
+            'auth',
+            'username and password must not be null',
+            'bigipauthcookie'
+        )
+        return any(marker in msg for marker in auth_markers)
+
+    return False
+
+
 def _retry_backoff(cb):
     RETRY_INTERVAL = 1
     log_interval = 0.5
@@ -1570,9 +1623,19 @@ def _retry_backoff(cb):
     while 1:
         if log_interval > 0.5:
             log_success = True
-        (success, val) = cb(log_success)
+        cb_result = cb(log_success)
+        non_retryable = False
+        if len(cb_result) == 2:
+            (success, val) = cb_result
+        else:
+            (success, val, non_retryable) = cb_result
+
         if success:
             return val
+        if non_retryable or _is_non_retryable_error(val):
+            raise ConfigError(
+                'Encountered non-retryable error: {}'.format(val)
+            )
         if elapsed == log_interval:
             elapsed = 0
             log_interval *= 2
@@ -1674,7 +1737,8 @@ def main():
                     log.info('BIG-IP connection established.')
                 return (True, bigip)
             except Exception as e:
-                return (False, 'BIG-IP connection error: {}'.format(e))
+                error = 'BIG-IP connection error: {}'.format(e)
+                return (False, error, _is_non_retryable_error(error))
         bigip = _retry_backoff(_bigip_connect_cb)
 
         user_agent = _set_user_agent(args.ctlr_prefix)
@@ -1697,7 +1761,8 @@ def main():
                     log.info('GTM BIG-IP connection established.')
                 return (True, bigip)
             except Exception as e:
-                return (False, 'GTM BIG-IP connection error: {}'.format(e))
+                error = 'GTM BIG-IP connection error: {}'.format(e)
+                return (False, error, _is_non_retryable_error(error))
 
         managers = []
         if not _is_ltm_disabled(config):

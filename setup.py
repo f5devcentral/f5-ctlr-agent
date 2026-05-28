@@ -28,6 +28,7 @@ def parse_requirements(filename):
             and not line.startswith('#')
             and not line.startswith('-e')
             and not line.startswith('-')
+            and ' @ git+' not in line 
         ]
 
 

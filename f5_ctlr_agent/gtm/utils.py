@@ -105,7 +105,7 @@ class GTMUtils:
         return dataserver, member_ip, member_port, destination
     
     @staticmethod
-        def convert_member_to_bigip_reference(
+    def convert_member_to_bigip_reference(
             member_spec, pool_dataserver=None, local_cluster_name=None):
         """Convert config member format to BIG-IP member reference format.
         

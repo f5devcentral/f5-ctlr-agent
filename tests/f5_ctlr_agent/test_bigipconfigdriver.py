@@ -510,6 +510,88 @@ def test_parse_config(request):
         assert handler._thread.is_alive() is False
 
 
+def test_is_non_retryable_error():
+    assert bigipconfigdriver._is_non_retryable_error(
+        'BIG-IP connection error: 401 Authorization Required'
+    ) is True
+    assert bigipconfigdriver._is_non_retryable_error(
+        'GTM BIG-IP connection error: 403 Forbidden'
+    ) is True
+    assert bigipconfigdriver._is_non_retryable_error(
+        'BIG-IP connection error: 400 username and password must not be null'
+    ) is True
+    assert bigipconfigdriver._is_non_retryable_error(
+        'BIG-IP connection error: timed out while connecting'
+    ) is False
+
+
+def test_retry_backoff_fail_fast_non_retryable_error():
+    def cb(_):
+        return (False, 'BIG-IP connection error: 401 Authorization Required', True)
+
+    with pytest.raises(bigipconfigdriver.ConfigError) as exc:
+        bigipconfigdriver._retry_backoff(cb)
+
+    assert 'non-retryable error' in str(exc.value)
+
+
+def test_retry_backoff_retries_transient_then_succeeds(monkeypatch):
+    call_count = {'value': 0}
+
+    def no_sleep(_):
+        return None
+
+    def cb(_):
+        call_count['value'] += 1
+        if call_count['value'] < 3:
+            return (False, 'BIG-IP connection error: timeout')
+        return (True, 'connected')
+
+    monkeypatch.setattr(bigipconfigdriver.time, 'sleep', no_sleep)
+
+    result = bigipconfigdriver._retry_backoff(cb)
+
+    assert result == 'connected'
+    assert call_count['value'] == 3
+
+
+def test_get_credentials_returns_none_without_bigip_creds(monkeypatch):
+    monkeypatch.setattr(bigipconfigdriver, 'get_credentials_from_socket', lambda _: {})
+    monkeypatch.setattr(bigipconfigdriver, 'get_credentials_from_env', lambda: None)
+    monkeypatch.setattr(bigipconfigdriver, 'get_gtm_credentials_from_env', lambda: None)
+
+    result = bigipconfigdriver.get_credentials('/tmp/secure_cis.sock')
+
+    assert result is None
+
+
+def test_get_credentials_defaults_gtm_to_bigip(monkeypatch):
+    monkeypatch.setattr(
+        bigipconfigdriver,
+        'get_credentials_from_socket',
+        lambda _: {'bigip_username': 'user1', 'bigip_password': 'pass1'})
+    monkeypatch.setattr(bigipconfigdriver, 'get_credentials_from_env', lambda: None)
+    monkeypatch.setattr(bigipconfigdriver, 'get_gtm_credentials_from_env', lambda: None)
+
+    result = bigipconfigdriver.get_credentials('/tmp/secure_cis.sock')
+
+    assert result['bigip_username'] == 'user1'
+    assert result['bigip_password'] == 'pass1'
+    assert result['gtm_username'] == 'user1'
+    assert result['gtm_password'] == 'pass1'
+
+
+def test_handle_credentials_raises_when_credentials_invalid(monkeypatch):
+    monkeypatch.setattr(bigipconfigdriver, 'get_credentials', lambda _: None)
+    config = {
+        'credential_socket': '/tmp/secure_cis.sock',
+        'bigip': {'url': 'https://10.0.0.1', 'partitions': ['Common']}
+    }
+
+    with pytest.raises(bigipconfigdriver.ConfigError):
+        bigipconfigdriver._handle_credentials(config)
+
+
 def test_handle_global_config(request):
     handler = None
     try:
