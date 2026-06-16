@@ -96,7 +96,8 @@ class CloudServiceManager():
     """
 
     def __init__(self, bigip, partition, user_agent=None, prefix=None,
-                 schema_path=None, gtm=False, local_cluster_name=None):
+                 schema_path=None, gtm=False, local_cluster_name=None,
+                 cluster_digital_asset_id=None):
         """Initialize the CloudServiceManager object."""
         self._mgmt_root = bigip
         self._schema = schema_path
@@ -106,7 +107,8 @@ class CloudServiceManager():
                 bigip,
                 partition,
                 user_agent=user_agent,
-                local_cluster_name=local_cluster_name)
+                local_cluster_name=local_cluster_name,
+                cluster_digital_asset_id=cluster_digital_asset_id)
             self._cccl = None
         else:
             self._cccl = F5CloudServiceManager(
@@ -443,7 +445,22 @@ class ConfigHandler():
                     if bool(allConfig):
                         newGtmConfig = allConfig["config"]
                         self._deleted_tenants = allConfig["deletedTenants"]
-                        GTMUtils.pre_process_gtm(newGtmConfig)
+                        disabled_zones = allConfig.get("disabledAvailabilityZones", [])
+
+                        # Support gtm.clusterIdentifier — propagate to sub-managers if changed
+                        cluster_id = allConfig.get("clusterIdentifier") or ""
+                        if cluster_id and cluster_id != mgr._gtm._cluster_digital_asset_id:
+                            log.info("GTM: Updating cluster identifier to: %s", cluster_id)
+                            mgr._gtm._cluster_digital_asset_id = cluster_id
+                            mgr._gtm._infrastructure._cluster_digital_asset_id = cluster_id
+                            mgr._gtm._wideip._cluster_digital_asset_id = cluster_id
+                            mgr._gtm._pool._cluster_digital_asset_id = cluster_id
+
+                        # enableDataServerMonitor controls GSLB server health monitor attachment
+                        mgr._gtm._infrastructure._enable_data_server_monitor = allConfig.get(
+                            "enableDataServerMonitor", True)
+
+                        GTMUtils.pre_process_gtm(newGtmConfig, disabled_availability_zones=disabled_zones)
                         isConfigSame = sorted(oldGtmConfig.items()) == sorted(newGtmConfig.items())
                         if not isConfigSame and len(oldGtmConfig) == 0:
                             if partition in newGtmConfig:
@@ -693,7 +710,8 @@ class GTMManager(object):
     under its control.
     """
 
-    def __init__(self, bigip, partition, user_agent=None, local_cluster_name=None):
+    def __init__(self, bigip, partition, user_agent=None, local_cluster_name=None,
+                 cluster_digital_asset_id=None):
         """Initialize an instance of the F5 CCCL service manager."""
         log.debug("F5GTMManager initialize")
 
@@ -707,6 +725,7 @@ class GTMManager(object):
         self._deleted_tenants = []
         self._gtm = bigip.tm.gtm
         self._local_cluster_name = local_cluster_name or ""
+        self._cluster_digital_asset_id = cluster_digital_asset_id or ""
         # PERF FIX #9: Cache BIG-IP version once
         self._bigip_version = None
         # RETRY FIX: Track pending cleanup state for isConfigSame retry scenario
@@ -720,17 +739,20 @@ class GTMManager(object):
         self._infrastructure = GTMInfrastructure(
             self._gtm,
             self._partition,
-            local_cluster_name=self._local_cluster_name)
+            local_cluster_name=self._local_cluster_name,
+            cluster_digital_asset_id=self._cluster_digital_asset_id)
         self._wideip = GTMWideIP(
             self._gtm,
             self._partition,
-            local_cluster_name=self._local_cluster_name)
+            local_cluster_name=self._local_cluster_name,
+            cluster_digital_asset_id=self._cluster_digital_asset_id)
         self._pool = GTMPool(
             self._gtm,
             self._partition,
             self._active_tenants,
             self._deleted_tenants,
-            local_cluster_name=self._local_cluster_name)
+            local_cluster_name=self._local_cluster_name,
+            cluster_digital_asset_id=self._cluster_digital_asset_id)
         self._monitor = GTMMonitor(
             self._gtm,
             self._partition,
@@ -836,9 +858,8 @@ class GTMManager(object):
             # Parse OLD config
             log.debug("GTM: Parsing configs for delete operation cleanup")
             old_parsed = GTMUtils.parse_gtm_config_once(
-                oldConfig, partition, local_cluster_name=self._local_cluster_name)
-
-            # DELETE FIX: Build the post-delete target config by removing
+                        oldConfig, partition, local_cluster_name=self._local_cluster_name,
+                        digital_asset_id=self._cluster_digital_asset_id)
             # deleted resources from a copy of the old config.
             # This ensures new_parsed correctly reflects what SHOULD exist
             # after deletions, so cleanup methods can diff properly.
@@ -862,9 +883,8 @@ class GTMManager(object):
 
             # Parse TARGET config (what should exist AFTER deletions)
             new_parsed = GTMUtils.parse_gtm_config_once(
-                target_config, partition, local_cluster_name=self._local_cluster_name)
-
-            # Step 1: Delete monitors
+                        target_config, partition, local_cluster_name=self._local_cluster_name,
+                        digital_asset_id=self._cluster_digital_asset_id)
             if len(opr_config["monitors"]) > 0:
                 for monitor in opr_config["monitors"]:
                     poolName = rev_map["monitors"][monitor]
@@ -972,7 +992,8 @@ class GTMManager(object):
             if len(opr_config["pools"]) > 0 or len(opr_config["monitors"]) > 0 or len(opr_config["wideIPs"]) > 0:
                 log.debug("GTM: Parsing configs for create/update operation")
                 old_parsed = GTMUtils.parse_gtm_config_once(
-                    oldConfig, partition, local_cluster_name=self._local_cluster_name)
+                    oldConfig, partition, local_cluster_name=self._local_cluster_name,
+                    digital_asset_id=self._cluster_digital_asset_id)
                 
                 # PERF FIX: Calculate which wideIPs changed BEFORE taking snapshot
                 wideips_to_process = set()
@@ -1021,13 +1042,15 @@ class GTMManager(object):
                 # Snapshot with FILTERED config (only changed wideIPs for incremental updates)
                 snapshot = self._snapshot_helper.snapshot_bigip_state(filtered_config)
                 orchestration_parsed = GTMUtils.parse_gtm_config_once(
-                    filtered_config, partition, local_cluster_name=self._local_cluster_name)
+                    filtered_config, partition, local_cluster_name=self._local_cluster_name,
+                    digital_asset_id=self._cluster_digital_asset_id)
                 self._infrastructure.orchestrate_with_snapshot(filtered_config, orchestration_parsed, snapshot)
                 
                 # CRITICAL: Parse FULL config for cleanup phase
                 # Must parse from full gtmConfig to get all existing members in cleanup_parsed
                 cleanup_parsed = GTMUtils.parse_gtm_config_once(
-                    gtmConfig, partition, local_cluster_name=self._local_cluster_name)
+                    gtmConfig, partition, local_cluster_name=self._local_cluster_name,
+                    digital_asset_id=self._cluster_digital_asset_id)
 
                 if partition in gtmConfig and "wideIPs" in gtmConfig[partition]:
                     if gtmConfig[partition]['wideIPs'] is not None:
@@ -1078,11 +1101,14 @@ class GTMManager(object):
                                                                 pool_obj = None
                                                                 if self._pool.gtm.pools.a_s.a.exists(name=oldPool['name'], partition=partition):
                                                                     pool_obj = self._pool.gtm.pools.a_s.a.load(name=oldPool['name'], partition=partition)
+                                                                old_pool_namespace = oldPool.get('namespace', '')
                                                                 for member in deleteMember:
                                                                     member_ref = GTMUtils.convert_member_to_bigip_reference(
                                                                         member,
                                                                         oldPool.get('DataServer'),
-                                                                        local_cluster_name=self._local_cluster_name)
+                                                                        local_cluster_name=self._local_cluster_name,
+                                                                        digital_asset_id=self._cluster_digital_asset_id,
+                                                                        namespace=old_pool_namespace)
                                                                     log.info("GTM: Deleting member {} (BIG-IP ref: {}) from pool {}".format(
                                                                         member, member_ref, oldPool['name']))
                                                                     self._pool.remove_member(oldPool['name'], member_ref, pool_obj=pool_obj)
@@ -1164,7 +1190,8 @@ class GTMManager(object):
             # Step 0: Parse config once
             log.info("GTM: [INIT-SYNC] Step 1/5: Parsing configuration for partition {}...".format(partition))
             parsed = GTMUtils.parse_gtm_config_once(
-                gtmConfig, partition, local_cluster_name=self._local_cluster_name)
+                gtmConfig, partition, local_cluster_name=self._local_cluster_name,
+                digital_asset_id=self._cluster_digital_asset_id)
             
             log.info("GTM: [INIT-SYNC] Step 2/5: Taking BIG-IP state snapshot (for {} wideIPs)...".format(
             total_wideips))
@@ -1350,21 +1377,28 @@ def _handle_global_config(config):
     level = DEFAULT_LOG_LEVEL
     verify_interval = DEFAULT_VERIFY_INTERVAL
     local_cluster_name = None
+    cluster_digital_asset_id = None
 
     if config and 'global' in config:
         global_cfg = config['global']
 
-        if 'log-level' in global_cfg:
-            log_level = global_cfg['log-level']
+        # Support both camelCase (new spec) and kebab-case (legacy)
+        log_level = global_cfg.get('logLevel') or global_cfg.get('log-level')
+        if log_level:
             try:
                 level = logging.getLevelName(log_level.upper())
             except (AttributeError):
                 log.warn('The "global:log-level" field in the configuration '
                          'file should be a string')
 
-        if 'verify-interval' in global_cfg:
+        _vi_raw = (
+            global_cfg.get('verifyInterval')
+            if 'verifyInterval' in global_cfg
+            else global_cfg.get('verify-interval')
+        )
+        if _vi_raw is not None:
             try:
-                verify_interval = float(global_cfg['verify-interval'])
+                verify_interval = float(_vi_raw)
                 if verify_interval < 0:
                     verify_interval = DEFAULT_VERIFY_INTERVAL
                     log.warn('The "global:verify-interval" field in the '
@@ -1376,6 +1410,7 @@ def _handle_global_config(config):
 
         vxlan_partition = global_cfg.get('vxlan-partition')
         local_cluster_name = global_cfg.get('local-cluster-name')
+        cluster_digital_asset_id = global_cfg.get('cluster-digital-asset-id')
 
     try:
         root_logger.setLevel(level)
@@ -1391,7 +1426,7 @@ def _handle_global_config(config):
         log.warn('Undefined value specified for the '
                  '"global:log-level" field in the configuration file')
 
-    return verify_interval, level, vxlan_partition, local_cluster_name
+    return verify_interval, level, vxlan_partition, local_cluster_name, cluster_digital_asset_id
 
 
 def get_credentials(socket_path=None):
@@ -1660,15 +1695,19 @@ def _find_net_schema():
 
 
 def _is_ltm_disabled(config):
+    # Support both camelCase (new spec) and kebab-case (legacy)
     try:
-        return config['global']['disable-ltm']
+        global_cfg = config['global']
+        return global_cfg.get('disableLTM', global_cfg.get('disable-ltm', False))
     except KeyError:
         return False
 
 
 def _is_arp_disabled(config):
+    # Support both camelCase (new spec) and kebab-case (legacy)
     try:
-        return config['global']['disable-arp']
+        global_cfg = config['global']
+        return global_cfg.get('disableARP', global_cfg.get('disable-arp', False))
     except KeyError:
         return False
 
@@ -1720,7 +1759,9 @@ def main():
         args = _handle_args()
 
         config = _parse_config(args.config_file)
-        verify_interval, _, vxlan_partition, local_cluster_name = _handle_global_config(config)
+        verify_interval, _, vxlan_partition, local_cluster_name, cluster_digital_asset_id = _handle_global_config(config)
+        # gtm.clusterIdentifier takes priority over global.cluster-digital-asset-id
+        cluster_digital_asset_id = config.get('gtm', {}).get('clusterIdentifier') or cluster_digital_asset_id
         config = _handle_credentials(config)
         host, port = _handle_bigip_config(config)
 
@@ -1792,7 +1833,8 @@ def main():
                     partition,
                     user_agent=user_agent,
                     gtm=True,
-                    local_cluster_name=local_cluster_name)
+                    local_cluster_name=local_cluster_name,
+                    cluster_digital_asset_id=cluster_digital_asset_id)
                 managers.append(manager)
 
         handler = ConfigHandler(args.config_file,

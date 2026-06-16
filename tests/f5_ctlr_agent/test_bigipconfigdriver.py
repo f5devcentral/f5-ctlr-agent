@@ -613,12 +613,13 @@ def test_handle_global_config(request):
             json.dump(obj, f)
 
         r = bigipconfigdriver._parse_config(config_file)
-        verify_interval, level, vx_p, local_cluster_name = \
+        verify_interval, level, vx_p, local_cluster_name, cluster_digital_asset_id = \
             bigipconfigdriver._handle_global_config(r)
         assert verify_interval == 10
         assert level == logging.WARNING
         assert vx_p == 'test'
         assert local_cluster_name is None
+        assert cluster_digital_asset_id is None
 
     finally:
         assert handler is not None
@@ -647,12 +648,13 @@ def test_handle_global_config_defaults(request):
             json.dump(obj, f)
 
         r = bigipconfigdriver._parse_config(config_file)
-        verify_interval, level, vx_p, local_cluster_name = \
+        verify_interval, level, vx_p, local_cluster_name, cluster_digital_asset_id = \
             bigipconfigdriver._handle_global_config(r)
         assert verify_interval == bigipconfigdriver.DEFAULT_VERIFY_INTERVAL
         assert level == bigipconfigdriver.DEFAULT_LOG_LEVEL
         assert vx_p is None
         assert local_cluster_name is None
+        assert cluster_digital_asset_id is None
 
     finally:
         assert handler is not None
@@ -680,7 +682,7 @@ def test_handle_global_config_bad_string_log_level(request):
             json.dump(obj, f)
 
         r = bigipconfigdriver._parse_config(config_file)
-        verify_interval, level, _, _ = bigipconfigdriver._handle_global_config(r)
+        verify_interval, level, _, _, _ = bigipconfigdriver._handle_global_config(r)
         assert verify_interval == 100
         assert level == bigipconfigdriver.DEFAULT_LOG_LEVEL
 
@@ -710,7 +712,7 @@ def test_handle_global_config_number_log_level(request):
             json.dump(obj, f)
 
         r = bigipconfigdriver._parse_config(config_file)
-        verify_interval, level, _, _ = bigipconfigdriver._handle_global_config(r)
+        verify_interval, level, _, _, _ = bigipconfigdriver._handle_global_config(r)
         assert verify_interval == 100
         assert level == bigipconfigdriver.DEFAULT_LOG_LEVEL
 
@@ -740,7 +742,7 @@ def test_handle_global_config_negative_verify_interval(request):
             json.dump(obj, f)
 
         r = bigipconfigdriver._parse_config(config_file)
-        verify_interval, level, _, _ = bigipconfigdriver._handle_global_config(r)
+        verify_interval, level, _, _, _ = bigipconfigdriver._handle_global_config(r)
         assert verify_interval == bigipconfigdriver.DEFAULT_VERIFY_INTERVAL
         assert level == logging.ERROR
 
@@ -770,7 +772,7 @@ def test_handle_global_config_string_verify_interval(request):
             json.dump(obj, f)
 
         r = bigipconfigdriver._parse_config(config_file)
-        verify_interval, level, _, _ = bigipconfigdriver._handle_global_config(r)
+        verify_interval, level, _, _, _ = bigipconfigdriver._handle_global_config(r)
         assert verify_interval == bigipconfigdriver.DEFAULT_VERIFY_INTERVAL
         assert level == logging.ERROR
 
@@ -1471,3 +1473,351 @@ def test_confighandler_backoff_timer(request):
             handler._thread.join(30)
             assert handler._thread.is_alive() is False
             assert handler._interval.is_running() is False
+
+
+# ─────────────────────────────────────────────────────────────
+# Enhancement unit tests (2.4 spec additions)
+# ─────────────────────────────────────────────────────────────
+
+from f5_ctlr_agent.gtm.utils import GTMUtils
+
+
+# --- Enhancement 1: DNS Suffix ---
+
+def test_build_wideip_name_with_suffix():
+    """WideIP name is normalized hostname + '.' + suffix."""
+    result = GTMUtils.build_wideip_name('app.example.com', 'gslb1.fr.net.intra')
+    assert result == 'app-example-com.gslb1.fr.net.intra'
+
+
+def test_build_wideip_name_without_suffix():
+    """Without suffix the original domain-name is returned unchanged."""
+    result = GTMUtils.build_wideip_name('app.example.com')
+    assert result == 'app.example.com'
+
+
+def test_pre_process_gtm_dns_suffix_builds_name():
+    """pre_process_gtm constructs WideIP name from domain-name + domain-suffix."""
+    config = {
+        'Common': {
+            'wideIPs': [
+                {
+                    'domain-name': 'foo.com',
+                    'domain-suffix': 'gslb1.fr.net.intra',
+                    'LoadBalancingMode': 'round-robin',
+                    'pools': [],
+                }
+            ]
+        }
+    }
+    GTMUtils.pre_process_gtm(config)
+    assert config['Common']['wideIPs'][0]['name'] == 'foo-com.gslb1.fr.net.intra'
+
+
+def test_pre_process_gtm_domain_name_without_suffix():
+    """When only domain-name is set and no existing name, uses domain-name as name."""
+    config = {
+        'Common': {
+            'wideIPs': [
+                {
+                    'domain-name': 'foo.com',
+                    'LoadBalancingMode': 'round-robin',
+                    'pools': [],
+                }
+            ]
+        }
+    }
+    GTMUtils.pre_process_gtm(config)
+    assert config['Common']['wideIPs'][0]['name'] == 'foo.com'
+
+
+# --- Enhancement 2: Alias support (tested via pre_process passthrough) ---
+
+def test_pre_process_gtm_preserves_aliases():
+    """pre_process_gtm leaves existing aliases field untouched."""
+    config = {
+        'Common': {
+            'wideIPs': [
+                {
+                    'name': 'app.example.com',
+                    'aliases': ['alias1.example.com', 'alias2.example.com'],
+                    'LoadBalancingMode': 'round-robin',
+                    'pools': [],
+                }
+            ]
+        }
+    }
+    GTMUtils.pre_process_gtm(config)
+    assert config['Common']['wideIPs'][0]['aliases'] == [
+        'alias1.example.com', 'alias2.example.com'
+    ]
+
+
+# --- Enhancement 3: Load Balancing Method ---
+
+def test_pre_process_gtm_fallback_ip_explicit():
+    """Fallback IP method with explicit IP sets pool fallbackMode and fallback-ip."""
+    config = {
+        'Common': {
+            'wideIPs': [
+                {
+                    'name': 'app.example.com',
+                    'load-balance': {'method': 'Fallback IP', 'fallback-ip': '10.0.0.5'},
+                    'LoadBalancingMode': 'round-robin',
+                    'pools': [
+                        {'name': 'pool1', 'fallbackMode': 'none',
+                         'LoadBalancingMode': 'round-robin', 'members': []},
+                    ],
+                }
+            ]
+        }
+    }
+    GTMUtils.pre_process_gtm(config)
+    pool = config['Common']['wideIPs'][0]['pools'][0]
+    assert pool['fallbackMode'] == 'fallback-ip'
+    assert pool['fallback-ip'] == '10.0.0.5'
+
+
+def test_pre_process_gtm_fallback_ip_uses_first_member():
+    """When fallback-ip is absent, uses first member IP as fallback."""
+    config = {
+        'Common': {
+            'wideIPs': [
+                {
+                    'name': 'app.example.com',
+                    'load-balance': {'method': 'Fallback IP'},
+                    'LoadBalancingMode': 'round-robin',
+                    'pools': [
+                        {
+                            'name': 'pool1', 'fallbackMode': 'none',
+                            'LoadBalancingMode': 'round-robin',
+                            'DataServer': '10.1.0.1',
+                            'members': ['10.1.0.1|10.2.0.3|80'],
+                        },
+                    ],
+                }
+            ]
+        }
+    }
+    GTMUtils.pre_process_gtm(config)
+    pool = config['Common']['wideIPs'][0]['pools'][0]
+    assert pool['fallbackMode'] == 'fallback-ip'
+    assert pool['fallback-ip'] == '10.2.0.3'
+
+
+def test_pre_process_gtm_return_to_dns():
+    """Return to DNS method sets pool fallbackMode to return-to-dns."""
+    config = {
+        'Common': {
+            'wideIPs': [
+                {
+                    'name': 'app.example.com',
+                    'load-balance': {'method': 'Return to DNS'},
+                    'LoadBalancingMode': 'round-robin',
+                    'pools': [
+                        {'name': 'pool1', 'fallbackMode': 'none',
+                         'LoadBalancingMode': 'round-robin', 'members': []},
+                    ],
+                }
+            ]
+        }
+    }
+    GTMUtils.pre_process_gtm(config)
+    pool = config['Common']['wideIPs'][0]['pools'][0]
+    assert pool['fallbackMode'] == 'return-to-dns'
+
+
+# --- Enhancement 4: GSLB server naming convention ---
+
+def test_format_server_name_new_with_uid_and_namespace():
+    """New naming: server_<UID>_<cluster>_<namespace>_<ip>."""
+    result = GTMUtils.format_server_name(
+        '10.155.15.101',
+        local_cluster_name='cluster-west-1',
+        digital_asset_id='bdee68ed-3157-44a7-a404-f3c311f5b0c3',
+        namespace='test')
+    assert result == 'server_bdee68ed-3157-44a7-a404-f3c311f5b0c3_cluster-west-1_test_10_155_15_101'
+
+
+def test_format_server_name_new_no_namespace():
+    """New naming without namespace: server_<UID>_<cluster>_<ip>."""
+    result = GTMUtils.format_server_name(
+        '10.1.0.1',
+        local_cluster_name='cluster-1',
+        digital_asset_id='bdee68ed-3157-44a7-a404-f3c311f5b0c3')
+    assert result == 'server_bdee68ed-3157-44a7-a404-f3c311f5b0c3_cluster-1_10_1_0_1'
+
+
+def test_format_server_name_legacy():
+    """Legacy naming (no UID) keeps existing format."""
+    result = GTMUtils.format_server_name('10.1.0.1', local_cluster_name='cluster-1')
+    assert result == 'cluster-1_server_10_1_0_1'
+
+
+def test_format_server_name_legacy_no_cluster():
+    """Legacy naming with no cluster prefix."""
+    result = GTMUtils.format_server_name('10.1.0.1')
+    assert result == 'server_10_1_0_1'
+
+
+def test_format_pool_name_with_uid():
+    """New pool naming: pool-<UID>-<cluster>-<domain>."""
+    result = GTMUtils.format_pool_name(
+        'app.example.com',
+        local_cluster_name='cluster-west-1',
+        digital_asset_id='bdee68ed-3157-44a7-a404-f3c311f5b0c3')
+    assert result == 'pool-bdee68ed-3157-44a7-a404-f3c311f5b0c3-cluster-west-1-app.example.com'
+
+
+def test_format_pool_name_legacy():
+    """Legacy pool naming falls back to apply_cluster_prefix."""
+    result = GTMUtils.format_pool_name('my-pool', local_cluster_name='cluster-1')
+    assert result == 'cluster-1_my-pool'
+
+
+# --- Enhancement 6: Zone-based disablement ---
+
+def test_pre_process_gtm_zone_disablement_filters_members():
+    """Disabled zones remove matching members from pool and rebuild members list."""
+    config = {
+        'Common': {
+            'wideIPs': [
+                {
+                    'name': 'app.example.com',
+                    'LoadBalancingMode': 'round-robin',
+                    'pools': [
+                        {
+                            'name': 'pool1',
+                            'fallbackMode': 'none',
+                            'LoadBalancingMode': 'round-robin',
+                            'members': [
+                                '10.1.0.1|10.2.0.3|80',
+                                '10.1.0.2|10.3.0.4|80',
+                            ],
+                            'member-info': [
+                                {
+                                    'data-server': '10.1.0.1',
+                                    'pool-member-address': '10.2.0.3',
+                                    'pool-member-port': '80',
+                                    'availability-zone': 'us-east-1a',
+                                },
+                                {
+                                    'data-server': '10.1.0.2',
+                                    'pool-member-address': '10.3.0.4',
+                                    'pool-member-port': '80',
+                                    'availability-zone': 'us-east-1b',
+                                },
+                            ],
+                        }
+                    ],
+                }
+            ]
+        }
+    }
+    GTMUtils.pre_process_gtm(config, disabled_availability_zones=['us-east-1a'])
+    pool = config['Common']['wideIPs'][0]['pools'][0]
+    assert len(pool['member-info']) == 1
+    assert pool['member-info'][0]['availability-zone'] == 'us-east-1b'
+    assert pool['members'] == ['10.1.0.2|10.3.0.4|80']
+
+
+def test_pre_process_gtm_no_disabled_zones_keeps_all_members():
+    """When no zones are disabled all members are preserved."""
+    config = {
+        'Common': {
+            'wideIPs': [
+                {
+                    'name': 'app.example.com',
+                    'LoadBalancingMode': 'round-robin',
+                    'pools': [
+                        {
+                            'name': 'pool1',
+                            'fallbackMode': 'none',
+                            'LoadBalancingMode': 'round-robin',
+                            'members': ['10.1.0.1|10.2.0.3|80'],
+                            'member-info': [
+                                {
+                                    'data-server': '10.1.0.1',
+                                    'pool-member-address': '10.2.0.3',
+                                    'pool-member-port': '80',
+                                    'availability-zone': 'us-east-1a',
+                                }
+                            ],
+                        }
+                    ],
+                }
+            ]
+        }
+    }
+    GTMUtils.pre_process_gtm(config, disabled_availability_zones=[])
+    pool = config['Common']['wideIPs'][0]['pools'][0]
+    assert len(pool['member-info']) == 1
+    assert len(pool['members']) == 1
+
+
+# --- global config: cluster-digital-asset-id extraction ---
+
+def test_handle_global_config_with_digital_asset_id(request):
+    """cluster-digital-asset-id in global config is extracted and returned."""
+    handler = None
+    try:
+        mgr = MockMgr()
+        config_template = Template('/tmp/config.$pid')
+        config_file = config_template.substitute(pid=os.getpid())
+        handler = bigipconfigdriver.ConfigHandler(config_file, mgr, 30)
+
+        obj = {
+            'global': {
+                'log-level': 'INFO',
+                'verify-interval': 30,
+                'local-cluster-name': 'cluster-west-1',
+                'cluster-digital-asset-id': 'bdee68ed-3157-44a7-a404-f3c311f5b0c3',
+            }
+        }
+        with open(config_file, 'w+') as f:
+            def fin():
+                os.unlink(config_file)
+            request.addfinalizer(fin)
+            json.dump(obj, f)
+
+        r = bigipconfigdriver._parse_config(config_file)
+        verify_interval, level, vx_p, local_cluster_name, cluster_digital_asset_id = \
+            bigipconfigdriver._handle_global_config(r)
+        assert verify_interval == 30
+        assert local_cluster_name == 'cluster-west-1'
+        assert cluster_digital_asset_id == 'bdee68ed-3157-44a7-a404-f3c311f5b0c3'
+        assert vx_p is None
+    finally:
+        assert handler is not None
+        handler.stop()
+        handler._thread.join(30)
+        assert handler._thread.is_alive() is False
+
+
+# --- get_gtm_config: disabledAvailabilityZones passthrough ---
+
+def test_get_gtm_config_returns_disabled_zones():
+    """get_gtm_config passes disabledAvailabilityZones through from the gtm section."""
+    config = {
+        'gtm': {
+            'config': {'Common': {'wideIPs': []}},
+            'deletedTenants': [],
+            'activeTenants': [],
+            'disabledAvailabilityZones': ['us-east-1a', 'us-west-2b'],
+        }
+    }
+    result = bigipconfigdriver.get_gtm_config(config)
+    assert result.get('disabledAvailabilityZones') == ['us-east-1a', 'us-west-2b']
+
+
+def test_get_gtm_config_no_disabled_zones_returns_empty():
+    """get_gtm_config returns empty list when disabledAvailabilityZones absent."""
+    config = {
+        'gtm': {
+            'config': {'Common': {'wideIPs': []}},
+            'deletedTenants': [],
+            'activeTenants': [],
+        }
+    }
+    result = bigipconfigdriver.get_gtm_config(config)
+    assert result.get('disabledAvailabilityZones', []) == []

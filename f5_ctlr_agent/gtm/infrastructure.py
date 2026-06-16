@@ -39,16 +39,21 @@ class GTMInfrastructure:
     - Cleanup of unused servers and virtual servers
     """
     
-    def __init__(self, gtm, partition, local_cluster_name=None):
+    def __init__(self, gtm, partition, local_cluster_name=None, cluster_digital_asset_id=None):
         """Initialize GTM Infrastructure manager.
-        
+
         Args:
             gtm: BIG-IP GTM object from management root
             partition (str): Partition to manage
+            local_cluster_name (str, optional): Cluster identifier
+            cluster_digital_asset_id (str, optional): Cluster digital asset ID for server naming
         """
         self._gtm = gtm
         self._partition = partition
         self._local_cluster_name = local_cluster_name
+        self._cluster_digital_asset_id = cluster_digital_asset_id
+        # enableDataServerMonitor — when False, skip health monitor on GSLB server creation
+        self._enable_data_server_monitor = True
     
     def create_gslb_server(self, server_name, datacenter_name, addresses,
                           product='generic-host', virtual_server_discovery='disabled',
@@ -254,8 +259,10 @@ class GTMInfrastructure:
             servers_skipped = 0
 
             for dataserver_ip in sorted(dataservers):
+                pool_namespace = parsed.get('dataserver_namespaces', {}).get(dataserver_ip, '')
                 server_name = GTMUtils.format_server_name(
-                    dataserver_ip, self._local_cluster_name)
+                    dataserver_ip, self._local_cluster_name,
+                    self._cluster_digital_asset_id, pool_namespace)
 
                 if server_name in snapshot['servers']:
                     # Server exists — load object for VS creation
@@ -270,7 +277,7 @@ class GTMInfrastructure:
                         addresses=[dataserver_ip],
                         product='bigip',
                         virtual_server_discovery='disabled',
-                        monitor='/Common/gateway_icmp')
+                        monitor='/Common/gateway_icmp' if self._enable_data_server_monitor else None)
                     created_server_objects[server_name] = server
                     servers_created += 1
 

@@ -31,16 +31,19 @@ log = logging.getLogger(__name__)
 class GTMWideIP:
     """Manages GTM WideIP resources."""
     
-    def __init__(self, gtm, partition, local_cluster_name=None):
+    def __init__(self, gtm, partition, local_cluster_name=None, cluster_digital_asset_id=None):
         """Initialize WideIP manager.
-        
+
         Args:
             gtm: BIG-IP GTM object
             partition (str): Partition to manage
+            local_cluster_name (str, optional): Cluster identifier
+            cluster_digital_asset_id (str, optional): Cluster digital asset ID for ownership tagging
         """
         self._gtm = gtm
         self._partition = partition
         self._local_cluster_name = local_cluster_name
+        self._cluster_digital_asset_id = cluster_digital_asset_id
 
     def _prefixed_pool_name(self, pool_name):
         return GTMUtils.apply_cluster_prefix(pool_name, self._local_cluster_name)
@@ -59,33 +62,64 @@ class GTMWideIP:
     
     def create_wideip(self, config, newPools):
         """Create wideip and returns the wideip object.
-        
+
         Args:
             config (dict): WideIP configuration with keys:
                           - name: WideIP name
                           - Load BalancingMode: Load balancing mode
+                          - aliases (optional): list of DNS aliases
+                          - domain-name / domain-suffix (optional): used by pre_process_gtm
             newPools (dict): Pools to attach to WideIP
-            
+
         Returns:
             WideIP object or None
         """
         try:
             newPools = self._normalize_pool_map(newPools)
+
+            # Enhancement 4: Build ownership description for multi-cluster scoping
+            description = None
+            if self._cluster_digital_asset_id:
+                cluster_part = (
+                    "{}-{}".format(self._local_cluster_name, self._cluster_digital_asset_id)
+                    if self._local_cluster_name else self._cluster_digital_asset_id
+                )
+                description = "managed-by: cis | cluster: {}".format(cluster_part)
+
+            # Enhancement 2: Alias support
+            aliases = config.get('aliases') or []
+
             exist = self._gtm.wideips.a_s.a.exists(name=config['name'], partition=self._partition)
             if not exist:
                 log.info('GTM: Creating wideip {}'.format(config['name']))
-                self._gtm.wideips.a_s.a.create(
-                    name=config['name'],
-                    partition=self._partition,
-                    lastResortPool="none",
-                    poolLbMode=config['LoadBalancingMode'])
+                create_kwargs = {
+                    'name': config['name'],
+                    'partition': self._partition,
+                    'lastResortPool': "none",
+                    'poolLbMode': config['LoadBalancingMode'],
+                }
+                if description:
+                    create_kwargs['description'] = description
+                if aliases:
+                    create_kwargs['aliases'] = aliases
+                self._gtm.wideips.a_s.a.create(**create_kwargs)
                 self.attach_pool_to_wideip(config['name'], list(newPools.values()))
             else:
                 wideip = self._gtm.wideips.a_s.a.load(
                     name=config['name'],
                     partition=self._partition)
+                needs_update = False
                 if wideip.poolLbMode != config['LoadBalancingMode']:
                     wideip.poolLbMode = config['LoadBalancingMode']
+                    needs_update = True
+                if description and getattr(wideip, 'description', None) != description:
+                    wideip.description = description
+                    needs_update = True
+                current_aliases = sorted(getattr(wideip, 'aliases', None) or [])
+                if sorted(aliases) != current_aliases:
+                    wideip.aliases = aliases
+                    needs_update = True
+                if needs_update:
                     wideip.update()
                 duplicatePools = []
                 if hasattr(wideip, 'pools'):
