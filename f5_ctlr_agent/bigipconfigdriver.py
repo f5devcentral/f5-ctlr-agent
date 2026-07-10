@@ -64,9 +64,59 @@ class KeyFilter(logging.Filter):
         return "PRIVATE KEY" not in record.getMessage()
 
 
+class SensitiveResponseFilter(logging.Filter):
+    """Filter to redact sensitive API response bodies from iControl REST logs.
+    
+    Prevents disclosure of:
+    - Network topology (ARP entries, VXLAN tunnels, pod IPs, MAC addresses)
+    - Authentication data (partitions, tokens, credentials)
+    - TLS/SSL configuration (certificates, keys, cipher suites)
+    - Application configuration details (pool members, virtual servers)
+    """
+    
+    # API namespaces that contain sensitive infrastructure data
+    SENSITIVE_API_PATTERNS = [
+        'tm:auth:',           # Authentication/authorization objects
+        'tm:net:arp:',        # ARP tables with pod IPs and MAC addresses
+        'tm:net:tunnel:',     # VXLAN/tunnel configs with management IPs
+        'tm:net:fdb:',        # Forwarding database entries
+        'tm:sys:crypto:',     # Cryptographic objects and keys
+        'tm:ltm:profile:client-ssl:',  # SSL profile configs
+        'tm:ltm:profile:server-ssl:',  # SSL profile configs
+        'tm:sys:application:service:',  # Application service configs
+        'tm:ltm:pool:',       # Pool member configurations
+    ]
+    
+    def filter(self, record):
+        """Redact response bodies containing sensitive API data."""
+        msg = record.getMessage()
+        
+        # Check if this is a debug response log from icontrol.session
+        if 'RESPONSE::' in msg or 'DEBUG RESPONSE::STATUS:' in msg:
+            # Check if response contains sensitive API namespace data
+            for pattern in self.SENSITIVE_API_PATTERNS:
+                if pattern in msg:
+                    # Redact the entire message and replace with security notice
+                    record.msg = "[REDACTED - Response contains sensitive %s data. Enable DEBUG logging only in secure development environments.]" % pattern
+                    record.args = ()
+                    return True
+        
+        return True
+
+
 root_logger.addFilter(ResponseStatusFilter())
 root_logger.addFilter(CertFilter())
 root_logger.addFilter(KeyFilter())
+root_logger.addFilter(SensitiveResponseFilter())
+
+# Ensure filters apply to library loggers from CCCL and f5-sdk
+# even if they configure their own handlers
+for logger_name in ['icontrol.session', 'icontrol', 'f5.bigip', 'f5_cccl']:
+    lib_logger = logging.getLogger(logger_name)
+    lib_logger.handlers = []         # Remove any SDK-attached handlers
+    lib_logger.propagate = True      # Ensure propagation to root logger
+    lib_logger.setLevel(logging.WARNING)  # Suppress at source
+
 
 
 DEFAULT_LOG_LEVEL = logging.INFO
@@ -262,7 +312,9 @@ def create_network_config(config):
         net['arps'] = config['vxlan-arp']['arps']
     else:
         #Disabling logging ARP entries.
-        log.debug("NET Config: %s", json.dumps(net))
+        log.debug("NET Config: routes=%d tunnels=%d",
+                  len(net.get('routes', [])),
+                  len(net.get('userFdbTunnels', [])))
     return net
 
 
@@ -1221,7 +1273,7 @@ class GTMManager(object):
                             obj.update()
                             log.info("HTTP Health monitor {} updated.".format(monitor['name']))
                         if monitor['type'] == "https":
-                            log.info(monitor)
+                            log.info("HTTPS Health monitor %s updating.", monitor['name'])
                             obj = gtm.monitor.https_s.https.load(
                                 name=monitor['name'],
                                 partition=partition)
@@ -1233,7 +1285,7 @@ class GTMManager(object):
                             obj.update()
                             log.info("HTTPS Health monitor {} updated.".format(monitor['name']))
                         if monitor['type'] == "tcp":
-                            log.info(monitor)
+                            log.info("TCP Health monitor %s updating.", monitor['name'])
                             obj = gtm.monitor.tcps.tcp.load(
                                 name=monitor['name'],
                                 partition=partition)
@@ -1624,12 +1676,20 @@ def _handle_global_config(config):
 
     try:
         root_logger.setLevel(level)
+        # Suppress iControl REST session logging at source —
+        # response bodies contain sensitive BIG-IP configuration data
+        # (ARP tables, VXLAN tunnels, pool members, credentials).
+        # This applies unconditionally, even in DEBUG mode.
+        logging.getLogger('icontrol.session').setLevel(logging.WARNING)
+        logging.getLogger('icontrol').setLevel(logging.WARNING)
         if level > logging.DEBUG:
             logging.getLogger('requests.packages.urllib3.'
                               'connectionpool').setLevel(logging.WARNING)
     except:
         level = DEFAULT_LOG_LEVEL
         root_logger.setLevel(level)
+        logging.getLogger('icontrol.session').setLevel(logging.WARNING)
+        logging.getLogger('icontrol').setLevel(logging.WARNING)
         if level > logging.DEBUG:
             logging.getLogger('requests.packages.urllib3.'
                               'connectionpool').setLevel(logging.WARNING)
