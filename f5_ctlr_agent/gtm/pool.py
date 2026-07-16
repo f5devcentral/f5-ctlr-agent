@@ -27,7 +27,7 @@ class GTMPool:
     """
 
     def __init__(self, gtm, partition, active_tenants=None, deleted_tenants=None,
-                 local_cluster_name=None, cluster_digital_asset_id=None):
+                 local_cluster_name=None, cluster_digital_asset_id=None, namespace=None):
         """Initialize GTM pool manager.
 
         Args:
@@ -37,6 +37,7 @@ class GTMPool:
             deleted_tenants: Optional list of deleted tenants for member validation
             local_cluster_name (str, optional): Cluster identifier
             cluster_digital_asset_id (str, optional): Cluster digital asset ID for server naming
+            namespace (str, optional): Global namespace for server naming
         """
         self.gtm = gtm
         self.partition = partition
@@ -44,6 +45,7 @@ class GTMPool:
         self._deleted_tenants = deleted_tenants or []
         self._local_cluster_name = local_cluster_name
         self._cluster_digital_asset_id = cluster_digital_asset_id
+        self._namespace = namespace or ""
 
     def _derive_fallback_ip_from_members(self, pool):
         """Return the first valid member IPv4 from pool members, else empty string."""
@@ -133,9 +135,6 @@ class GTMPool:
                             'using return-to-dns instead.',
                             pool_name)
 
-                # Enhancement 4: namespace for new server naming format
-                pool_namespace = pool.get('namespace', '')
-
                 exist = self.gtm.pools.a_s.a.exists(name=pool_name, partition=self.partition)
                 if not exist:
                     log.info('GTM: Creating Pool: {}'.format(pool_name))
@@ -213,7 +212,7 @@ class GTMPool:
                             destination, self._local_cluster_name)
                         server_name = GTMUtils.format_server_name(
                             dataserver, self._local_cluster_name,
-                            self._cluster_digital_asset_id, pool_namespace)
+                            self._cluster_digital_asset_id, self._namespace)
                         member_name = "{}:{}".format(server_name, vs_name)
 
                         # PERF FIX #3: Skip validation when infrastructure is already orchestrated
@@ -355,7 +354,6 @@ class GTMPool:
                         if pool['name'] == pool_name and pool['members'] is not None:
                             members_to_remove = list(pool['members'])
                             pool_dataserver = pool.get('DataServer')
-                            pool_namespace = pool.get('namespace', '')
 
                             # PERF FIX #11: Load pool once for all member removals
                             pool_obj = None
@@ -368,7 +366,7 @@ class GTMPool:
                                     pool_dataserver,
                                     local_cluster_name=self._local_cluster_name,
                                     digital_asset_id=self._cluster_digital_asset_id,
-                                    namespace=pool_namespace)
+                                    namespace=self._namespace)
                                 self.remove_member(prefixed_pool_name, member_ref, pool_obj=pool_obj)
                             config[self.partition]['wideIPs'][index]["pools"][pool_index]['members'] = None
                             break

@@ -89,7 +89,7 @@ class GTMWideIP:
                 if self._cluster_digital_asset_id:
                     parts.append(self._cluster_digital_asset_id)
                 cluster_part = "-".join(parts)
-                description = "managed-by: cis | cluster: {}".format(cluster_part)
+                description = "managed-by: ebc | cluster: {}".format(cluster_part)
 
             # Enhancement 2: Alias support
             aliases = config.get('aliases') or []

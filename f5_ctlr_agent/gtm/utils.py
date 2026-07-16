@@ -249,7 +249,7 @@ class GTMUtils:
         return member_ref
     
     @staticmethod
-    def parse_gtm_config_once(gtmConfig, partition, local_cluster_name=None, digital_asset_id=None):
+    def parse_gtm_config_once(gtmConfig, partition, local_cluster_name=None, digital_asset_id=None, namespace=None):
         """Single-pass config parsing to extract ALL needed data structures.
 
         Args:
@@ -257,6 +257,7 @@ class GTMUtils:
             partition (str): Partition to parse
             local_cluster_name (str, optional): Cluster identifier
             digital_asset_id (str, optional): Cluster digital asset ID for new server naming
+            namespace (str, optional): Global namespace for server naming
 
         Returns:
             dict: Parsed data with keys:
@@ -265,7 +266,6 @@ class GTMUtils:
                   - members_by_pool: dict {pool_name: set(member_refs)}
                   - all_member_refs: set of all member references
                   - all_server_names: set of all server names
-                  - dataserver_namespaces: dict {dataserver_ip: namespace}
         """
         result = {
             'dataservers': set(),
@@ -273,7 +273,6 @@ class GTMUtils:
             'members_by_pool': {},
             'all_member_refs': set(),
             'all_server_names': set(),
-            'dataserver_namespaces': {},
         }
 
         if partition not in gtmConfig:
@@ -292,7 +291,6 @@ class GTMUtils:
                 pool_name = GTMUtils.format_pool_name(
                     pool.get('name'), local_cluster_name, digital_asset_id)
                 pool_dataserver = pool.get('DataServer')
-                pool_namespace = pool.get('namespace')
                 members = pool.get('members', [])
 
                 if pool_name and pool_name not in result['members_by_pool']:
@@ -309,11 +307,9 @@ class GTMUtils:
                         continue
 
                     result['dataservers'].add(dataserver)
-                    if pool_namespace:
-                        result['dataserver_namespaces'][dataserver] = pool_namespace
 
                     server_name = GTMUtils.format_server_name(
-                        dataserver, local_cluster_name, digital_asset_id, pool_namespace)
+                        dataserver, local_cluster_name, digital_asset_id, namespace)
                     vs_name = GTMUtils.format_vs_name(
                         destination, local_cluster_name)
 

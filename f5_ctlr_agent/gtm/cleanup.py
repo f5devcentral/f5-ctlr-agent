@@ -26,18 +26,24 @@ class GTMCleanup:
         pool_manager: GTMPool instance for member removal
     """
 
-    def __init__(self, gtm, partition, pool_manager=None, local_cluster_name=None):
+    def __init__(self, gtm, partition, pool_manager=None, local_cluster_name=None,
+                 digital_asset_id=None, namespace=None):
         """Initialize GTM cleanup manager.
         
         Args:
             gtm: F5 SDK GTM object for API operations
             partition: BIG-IP partition name
             pool_manager: Optional GTMPool instance for member operations
+            local_cluster_name (str, optional): Cluster identifier
+            digital_asset_id (str, optional): Cluster digital asset ID for server naming
+            namespace (str, optional): Default namespace for resource identification
         """
         self.gtm = gtm
         self.partition = partition
         self._pool_manager = pool_manager
         self._local_cluster_name = local_cluster_name
+        self._digital_asset_id = digital_asset_id
+        self._namespace = namespace
 
     def cleanup_orphaned_members_with_snapshot(self, expected_members, snapshot):
         """Remove orphaned pool members using snapshot data.
@@ -113,7 +119,9 @@ class GTMCleanup:
                 old_parsed_data = GTMUtils.parse_gtm_config_once(
                     oldConfig,
                     self.partition,
-                    local_cluster_name=self._local_cluster_name)
+                    local_cluster_name=self._local_cluster_name,
+                    digital_asset_id=self._digital_asset_id,
+                    namespace=self._namespace)
                 old_members = old_parsed_data['all_member_refs']
 
             if new_parsed is not None:
@@ -122,7 +130,9 @@ class GTMCleanup:
                 new_parsed_data = GTMUtils.parse_gtm_config_once(
                     newConfig,
                     self.partition,
-                    local_cluster_name=self._local_cluster_name)
+                    local_cluster_name=self._local_cluster_name,
+                    digital_asset_id=self._digital_asset_id,
+                    namespace=self._namespace)
                 new_members = new_parsed_data['all_member_refs']
 
             members_to_delete = old_members - new_members
@@ -222,7 +232,9 @@ class GTMCleanup:
                 old_parsed_data = GTMUtils.parse_gtm_config_once(
                     oldConfig,
                     list(oldConfig.keys())[0] if oldConfig else self.partition,
-                    local_cluster_name=self._local_cluster_name)
+                    local_cluster_name=self._local_cluster_name,
+                    digital_asset_id=self._digital_asset_id,
+                    namespace=self._namespace)
                 old_servers = old_parsed_data['all_server_names']
 
             if new_parsed is not None:
@@ -231,7 +243,9 @@ class GTMCleanup:
                 new_parsed_data = GTMUtils.parse_gtm_config_once(
                     newConfig,
                     list(newConfig.keys())[0] if newConfig else self.partition,
-                    local_cluster_name=self._local_cluster_name)
+                    local_cluster_name=self._local_cluster_name,
+                    digital_asset_id=self._digital_asset_id,
+                    namespace=self._namespace)
                 new_servers = new_parsed_data['all_server_names']
 
             # Check ALL old servers (may have 0 VSs after VS cleanup)

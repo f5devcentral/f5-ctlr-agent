@@ -39,7 +39,7 @@ class GTMInfrastructure:
     - Cleanup of unused servers and virtual servers
     """
     
-    def __init__(self, gtm, partition, local_cluster_name=None, cluster_digital_asset_id=None):
+    def __init__(self, gtm, partition, local_cluster_name=None, cluster_digital_asset_id=None, namespace=None):
         """Initialize GTM Infrastructure manager.
 
         Args:
@@ -47,11 +47,13 @@ class GTMInfrastructure:
             partition (str): Partition to manage
             local_cluster_name (str, optional): Cluster identifier
             cluster_digital_asset_id (str, optional): Cluster digital asset ID for server naming
+            namespace (str, optional): Global namespace for server naming
         """
         self._gtm = gtm
         self._partition = partition
         self._local_cluster_name = local_cluster_name
         self._cluster_digital_asset_id = cluster_digital_asset_id
+        self._namespace = namespace
         # enableDataServerMonitor — when False, skip health monitor on GSLB server creation
         self._enable_data_server_monitor = True
     
@@ -259,10 +261,9 @@ class GTMInfrastructure:
             servers_skipped = 0
 
             for dataserver_ip in sorted(dataservers):
-                pool_namespace = parsed.get('dataserver_namespaces', {}).get(dataserver_ip, '')
                 server_name = GTMUtils.format_server_name(
                     dataserver_ip, self._local_cluster_name,
-                    self._cluster_digital_asset_id, pool_namespace)
+                    self._cluster_digital_asset_id, self._namespace)
 
                 if server_name in snapshot['servers']:
                     # Server exists — load object for VS creation
@@ -270,13 +271,14 @@ class GTMInfrastructure:
                     created_server_objects[server_name] = self._gtm.servers.server.load(name=server_name)
                     servers_skipped += 1
                 else:
-                    # Server doesn't exist — create it
+                    # Server doesn't exist — create it with default product='generic-host'
+                    # (prevents BIG-IP from auto-attaching default monitors)
                     server = self.create_gslb_server(
                         server_name=server_name,
                         datacenter_name=datacenter_name,
                         addresses=[dataserver_ip],
-                        product='bigip',
                         virtual_server_discovery='disabled',
+                        description='Managed by: ebc',
                         monitor='/Common/gateway_icmp' if self._enable_data_server_monitor else None)
                     created_server_objects[server_name] = server
                     servers_created += 1
