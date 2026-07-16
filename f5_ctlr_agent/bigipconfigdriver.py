@@ -463,6 +463,8 @@ class ConfigHandler():
                             mgr._gtm._wideip._local_cluster_name = cluster_id
                             mgr._gtm._pool._local_cluster_name = cluster_id
                             mgr._gtm._monitor._local_cluster_name = cluster_id
+                            mgr._gtm._snapshot_helper._local_cluster_name = cluster_id
+                            mgr._gtm._cleanup._local_cluster_name = cluster_id
 
                         # Propagate digitalAssetID to all GTM submodules when it changes.
                         if digital_asset_id is not None and digital_asset_id != mgr._gtm._cluster_digital_asset_id:
@@ -471,6 +473,8 @@ class ConfigHandler():
                             mgr._gtm._infrastructure._cluster_digital_asset_id = digital_asset_id
                             mgr._gtm._wideip._cluster_digital_asset_id = digital_asset_id
                             mgr._gtm._pool._cluster_digital_asset_id = digital_asset_id
+                            mgr._gtm._snapshot_helper._cluster_digital_asset_id = digital_asset_id
+                            mgr._gtm._cleanup._cluster_digital_asset_id = digital_asset_id
 
                         # Propagate namespace to all GTM submodules when it changes.
                         ns = allConfig.get("namespace")
@@ -761,7 +765,8 @@ class GTMManager(object):
         self._snapshot_helper = GTMSnapshot(
             self._gtm,
             self._partition,
-            local_cluster_name=self._local_cluster_name)
+            local_cluster_name=self._local_cluster_name,
+            cluster_digital_asset_id=self._cluster_digital_asset_id)
         self._infrastructure = GTMInfrastructure(
             self._gtm,
             self._partition,
@@ -791,7 +796,7 @@ class GTMManager(object):
             self._partition,
             pool_manager=self._pool,
             local_cluster_name=self._local_cluster_name,
-            digital_asset_id=self._cluster_digital_asset_id,
+            cluster_digital_asset_id=self._cluster_digital_asset_id,
             namespace=self._namespace)
 
     def get_gtm_config(self):
@@ -859,7 +864,10 @@ class GTMManager(object):
                     if opr == "delete":
                         # DELETE FIX: No longer passing incoming_config;
                         # handle_operation_delete builds target config internally
-                        self.handle_operation_delete(gtm, partition, opr_config[opr], rev_map)
+                        # RENAME FIX: Pass incoming gtmConfig so delete cleanup
+                        # preserves infrastructure needed by the new config
+                        self.handle_operation_delete(gtm, partition, opr_config[opr], rev_map,
+                                                     incoming_config=gtmConfig)
                         
                         # PENDING CLEANUP FIX: Process any pending cleanup from delete BEFORE create runs
                         # This prevents create operation from overwriting delete's pending cleanup state
@@ -875,7 +883,7 @@ class GTMManager(object):
             raise e
 
     # DELETE FIX: Build post-delete target config to correctly identify servers/VSs to remove
-    def handle_operation_delete(self, gtm, partition, opr_config, rev_map):
+    def handle_operation_delete(self, gtm, partition, opr_config, rev_map, incoming_config=None):
         """ Handle delete operation """
         # RETRY FIX: Work on a deep copy of config; only commit at the end if all steps succeed
         # This prevents partial mutations from making retry think config is already applied
@@ -954,31 +962,42 @@ class GTMManager(object):
         self._gtm_config = working_config
         log.debug("GTM: Committed config changes after successful delete operation")
 
-        # Step 4: Clean up unused virtual servers using target_config
+        # Step 4: Clean up unused virtual servers
+        # RENAME FIX: When incoming_config is provided (rename scenario), use it as
+        # the cleanup target instead of target_config. This preserves infrastructure
+        # (servers/VSs) that the new WideIP still needs.
+        cleanup_config = incoming_config if incoming_config else target_config
+        if incoming_config:
+            cleanup_new_parsed = GTMUtils.parse_gtm_config_once(
+                incoming_config, partition, local_cluster_name=self._local_cluster_name,
+                digital_asset_id=self._cluster_digital_asset_id)
+        else:
+            cleanup_new_parsed = new_parsed
+
         # RESILIENCE FIX: Separate try block so GSLB server cleanup always runs
         # Errors here trigger retry but the successful delete work is already saved
         vs_cleanup_error = None
         datacenter_name = None
-        if partition in target_config:
-            datacenter_name = target_config[partition].get('dataCenter', None)
+        if partition in cleanup_config:
+            datacenter_name = cleanup_config[partition].get('dataCenter', None)
             if datacenter_name and '/' in datacenter_name:
                 datacenter_name = datacenter_name.split('/')[-1]
         
         try:
             log.info("GTM: Cleaning up unused virtual servers")
-            self._cleanup.cleanup_unused_virtual_servers(oldConfig, target_config,
-                                               old_parsed=old_parsed, new_parsed=new_parsed)
+            self._cleanup.cleanup_unused_virtual_servers(oldConfig, cleanup_config,
+                                               old_parsed=old_parsed, new_parsed=cleanup_new_parsed)
         except Exception as e:
             log.error("GTM: VS cleanup failed, will still attempt server cleanup: %s", e)
             vs_cleanup_error = e
 
-        # Step 5: Clean up unused GSLB servers using target_config
+        # Step 5: Clean up unused GSLB servers using cleanup_config
         # RESILIENCE FIX: Always attempt, even if VS cleanup failed
         server_cleanup_error = None
         try:
             log.info("GTM: Cleaning up unused GSLB servers")
-            self._cleanup.cleanup_unused_gslb_servers(datacenter_name, oldConfig, target_config,
-                                            old_parsed=old_parsed, new_parsed=new_parsed)
+            self._cleanup.cleanup_unused_gslb_servers(datacenter_name, oldConfig, cleanup_config,
+                                            old_parsed=old_parsed, new_parsed=cleanup_new_parsed)
         except Exception as e:
             log.error("GTM: GSLB server cleanup also failed: %s", e)
             server_cleanup_error = e
@@ -989,9 +1008,9 @@ class GTMManager(object):
             self._pending_cleanup = {
                 'partition': partition,
                 'oldConfig': oldConfig,
-                'target_config': target_config,
+                'target_config': cleanup_config,
                 'old_parsed': old_parsed,
-                'new_parsed': new_parsed,
+                'new_parsed': cleanup_new_parsed,
                 'datacenter_name': datacenter_name
             }
             log.debug("GTM: Saved pending cleanup state for retry")

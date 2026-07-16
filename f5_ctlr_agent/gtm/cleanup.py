@@ -27,7 +27,7 @@ class GTMCleanup:
     """
 
     def __init__(self, gtm, partition, pool_manager=None, local_cluster_name=None,
-                 digital_asset_id=None, namespace=None):
+                 cluster_digital_asset_id=None, namespace=None):
         """Initialize GTM cleanup manager.
         
         Args:
@@ -35,14 +35,14 @@ class GTMCleanup:
             partition: BIG-IP partition name
             pool_manager: Optional GTMPool instance for member operations
             local_cluster_name (str, optional): Cluster identifier
-            digital_asset_id (str, optional): Cluster digital asset ID for server naming
+            cluster_digital_asset_id (str, optional): Cluster digital asset ID
             namespace (str, optional): Default namespace for resource identification
         """
         self.gtm = gtm
         self.partition = partition
         self._pool_manager = pool_manager
         self._local_cluster_name = local_cluster_name
-        self._digital_asset_id = digital_asset_id
+        self.cluster_digital_asset_id = cluster_digital_asset_id
         self._namespace = namespace
 
     def cleanup_orphaned_members_with_snapshot(self, expected_members, snapshot):
@@ -120,7 +120,7 @@ class GTMCleanup:
                     oldConfig,
                     self.partition,
                     local_cluster_name=self._local_cluster_name,
-                    digital_asset_id=self._digital_asset_id,
+                    digital_asset_id=self.cluster_digital_asset_id,
                     namespace=self._namespace)
                 old_members = old_parsed_data['all_member_refs']
 
@@ -131,7 +131,7 @@ class GTMCleanup:
                     newConfig,
                     self.partition,
                     local_cluster_name=self._local_cluster_name,
-                    digital_asset_id=self._digital_asset_id,
+                    digital_asset_id=self.cluster_digital_asset_id,
                     namespace=self._namespace)
                 new_members = new_parsed_data['all_member_refs']
 
@@ -233,7 +233,7 @@ class GTMCleanup:
                     oldConfig,
                     list(oldConfig.keys())[0] if oldConfig else self.partition,
                     local_cluster_name=self._local_cluster_name,
-                    digital_asset_id=self._digital_asset_id,
+                    digital_asset_id=self.cluster_digital_asset_id,
                     namespace=self._namespace)
                 old_servers = old_parsed_data['all_server_names']
 
@@ -244,7 +244,7 @@ class GTMCleanup:
                     newConfig,
                     list(newConfig.keys())[0] if newConfig else self.partition,
                     local_cluster_name=self._local_cluster_name,
-                    digital_asset_id=self._digital_asset_id,
+                    digital_asset_id=self.cluster_digital_asset_id,
                     namespace=self._namespace)
                 new_servers = new_parsed_data['all_server_names']
 
