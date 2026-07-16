@@ -1581,7 +1581,7 @@ def get_gtm_credentials_from_env():
 
 def get_credentials_from_socket(socket_path=None):
     if socket_path is None:
-        socket_path = "/tmp/secure_cis.sock"
+        socket_path = "/tmp/secure_ebc.sock"
 
     client = None
     retry_interval = 0.5
@@ -1669,7 +1669,7 @@ def _handle_bigip_config(config):
 
 
 def _handle_credentials(config):
-    credential_socket = config.get('credential_socket', '/tmp/secure_cis.sock')
+    credential_socket = config.get('credential_socket', '/tmp/secure_ebc.sock')
     credentials = get_credentials(credential_socket)
     if not credentials:
         raise ConfigError('Failed to retrieve valid BIG-IP credentials')

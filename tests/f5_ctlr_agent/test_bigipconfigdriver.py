@@ -560,7 +560,7 @@ def test_get_credentials_returns_none_without_bigip_creds(monkeypatch):
     monkeypatch.setattr(bigipconfigdriver, 'get_credentials_from_env', lambda: None)
     monkeypatch.setattr(bigipconfigdriver, 'get_gtm_credentials_from_env', lambda: None)
 
-    result = bigipconfigdriver.get_credentials('/tmp/secure_cis.sock')
+    result = bigipconfigdriver.get_credentials('/tmp/secure_ebc.sock')
 
     assert result is None
 
@@ -573,7 +573,7 @@ def test_get_credentials_defaults_gtm_to_bigip(monkeypatch):
     monkeypatch.setattr(bigipconfigdriver, 'get_credentials_from_env', lambda: None)
     monkeypatch.setattr(bigipconfigdriver, 'get_gtm_credentials_from_env', lambda: None)
 
-    result = bigipconfigdriver.get_credentials('/tmp/secure_cis.sock')
+    result = bigipconfigdriver.get_credentials('/tmp/secure_ebc.sock')
 
     assert result['bigip_username'] == 'user1'
     assert result['bigip_password'] == 'pass1'
@@ -584,7 +584,7 @@ def test_get_credentials_defaults_gtm_to_bigip(monkeypatch):
 def test_handle_credentials_raises_when_credentials_invalid(monkeypatch):
     monkeypatch.setattr(bigipconfigdriver, 'get_credentials', lambda _: None)
     config = {
-        'credential_socket': '/tmp/secure_cis.sock',
+        'credential_socket': '/tmp/secure_ebc.sock',
         'bigip': {'url': 'https://10.0.0.1', 'partitions': ['Common']}
     }
 
