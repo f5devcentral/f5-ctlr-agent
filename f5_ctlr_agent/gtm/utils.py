@@ -415,6 +415,7 @@ class GTMUtils:
                                         pool.get('name', ''))
                         elif method == 'Return to DNS':
                             pool['fallbackMode'] = 'return-to-dns'
+                            pool.pop('fallback-ip', None)
 
                 for pool in config.get('pools', []):
                     # Enhancement 6: Zone disablement — filter members by availability-zone
