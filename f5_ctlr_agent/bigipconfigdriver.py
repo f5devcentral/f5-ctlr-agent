@@ -926,31 +926,61 @@ class GTMManager(object):
             if partition in oldConfig and partition in gtmConfig:
                 opr_config = self.process_config(oldConfig[partition], gtmConfig[partition])
                 rev_map = self.create_reverse_map(oldConfig[partition])
-                
-                for opr in opr_config:
-                    if opr == "delete":
-                        # DELETE FIX: No longer passing incoming_config;
-                        # handle_operation_delete builds target config internally
-                        self.handle_operation_delete(gtm, partition, opr_config[opr], rev_map)
-                        
-                        # PENDING CLEANUP FIX: Process any pending cleanup from delete BEFORE create runs
-                        # This prevents create operation from overwriting delete's pending cleanup state
-                        if self._pending_cleanup is not None:
-                            log.info("GTM: Processing pending delete cleanup before create operation")
-                            self.retry_pending_cleanup(gtm)
-                    
-                    if opr == "create" or opr == "update":
-                        self.handle_operation_create(gtm, partition, gtmConfig, opr_config[opr], opr)
+
+                # NOTE: process_config() always returns all three keys even when their
+                # lists are empty (e.g. {"wideIPs":[], "pools":[], "monitors":[]}).
+                # We must guard on whether the lists are non-empty, not on key presence,
+                # to avoid calling handle_operation_delete() for pure create/update cycles.
+
+                # Process delete ALWAYS before create/update — enforced explicitly
+                # rather than relying on dict iteration order (which would be "create" first,
+                # since process_config() returns {"create":…, "delete":…, "update":…}).
+                # For a wideIP rename the same servers/VSs are shared: passing incoming_config
+                # lets handle_operation_delete scope its VS/server cleanup against the NEW
+                # config so those resources are NOT deleted before handle_operation_create runs.
+                delete_op = opr_config.get("delete", {})
+                has_deletes = (
+                    bool(delete_op.get("wideIPs")) or
+                    bool(delete_op.get("pools")) or
+                    bool(delete_op.get("monitors"))
+                )
+                if has_deletes:
+                    self.handle_operation_delete(gtm, partition, delete_op, rev_map,
+                                                 incoming_config=gtmConfig)
+
+                    # Process any pending cleanup from delete BEFORE create runs to prevent
+                    # create from overwriting delete's pending cleanup state.
+                    if self._pending_cleanup is not None:
+                        log.info("GTM: Processing pending delete cleanup before create operation")
+                        self.retry_pending_cleanup(gtm)
+
+                for opr in ("create", "update"):
+                    op_items = opr_config.get(opr, {})
+                    if (bool(op_items.get("wideIPs")) or
+                            bool(op_items.get("pools")) or
+                            bool(op_items.get("monitors"))):
+                        self.handle_operation_create(gtm, partition, gtmConfig, op_items, opr)
         except F5CcclError as e:
             raise e
 
-    # DELETE FIX: Build post-delete target config to correctly identify servers/VSs to remove
-    def handle_operation_delete(self, gtm, partition, opr_config, rev_map):
-        """ Handle delete operation """
+    def handle_operation_delete(self, gtm, partition, opr_config, rev_map, incoming_config=None):
+        """ Handle delete operation.
+
+        Args:
+            gtm: BIG-IP GTM handle
+            partition: partition name
+            opr_config: dict with keys wideIPs/pools/monitors listing names to delete
+            rev_map: reverse mapping from create_reverse_map()
+            incoming_config: the full new GTM config being applied (used to scope VS/server
+                             cleanup — resources still referenced by the new config are kept).
+                             When provided (e.g. a wideIP rename), the cleanup compares old
+                             member-refs against the NEW config so that shared servers/VSs are
+                             not deleted before handle_operation_create() can re-attach them.
+        """
         # RETRY FIX: Work on a deep copy of config; only commit at the end if all steps succeed
         # This prevents partial mutations from making retry think config is already applied
         working_config = copy.deepcopy(self._gtm_config)
-        
+
         try:
             # Save old config before making changes
             oldConfig = self._gtm_config
@@ -959,10 +989,9 @@ class GTMManager(object):
             log.debug("GTM: Parsing configs for delete operation cleanup")
             old_parsed = self._parse_gtm_config_once(oldConfig, partition)
 
-            # DELETE FIX: Build the post-delete target config by removing
-            # deleted resources from a copy of the old config.
-            # This ensures new_parsed correctly reflects what SHOULD exist
-            # after deletions, so cleanup methods can diff properly.
+            # Build the post-delete target config by removing deleted resources from a copy
+            # of the old config.  This is used as a fallback when incoming_config is not
+            # provided (pure-delete, no concurrent create).
             target_config = copy.deepcopy(self._gtm_config)
             if partition in target_config and target_config[partition].get('wideIPs'):
                 deleted_wideip_names = set(opr_config.get("wideIPs", []))
@@ -981,7 +1010,15 @@ class GTMManager(object):
                     surviving_wideips.append(wideip)
                 target_config[partition]['wideIPs'] = surviving_wideips
 
-            # Parse TARGET config (what should exist AFTER deletions)
+            # RENAME FIX: When incoming_config is provided use it as the reference for
+            # VS/server cleanup.  For a wideIP rename the same servers/VSs are reused by
+            # the new wideIP; scoping cleanup against incoming_config means
+            #   members_to_delete = old_member_refs - new_member_refs = {}
+            # so those resources are NOT deleted before handle_operation_create() runs.
+            cleanup_config = incoming_config if incoming_config is not None else target_config
+            cleanup_new_parsed = self._parse_gtm_config_once(cleanup_config, partition)
+
+            # Keep target_config-based new_parsed for the delete steps themselves (steps 1-3)
             new_parsed = self._parse_gtm_config_once(target_config, partition)
 
             # Step 1: Delete monitors
@@ -1015,31 +1052,33 @@ class GTMManager(object):
         self._gtm_config = working_config
         log.debug("GTM: Committed config changes after successful delete operation")
 
-        # Step 4: Clean up unused virtual servers using target_config
-        # RESILIENCE FIX: Separate try block so GSLB server cleanup always runs
-        # Errors here trigger retry but the successful delete work is already saved
+        # Step 4: Clean up unused virtual servers.
+        # RENAME FIX: Use cleanup_config (= incoming_config when provided) so that
+        # VS/server cleanup is scoped against the new full config, not just the
+        # post-delete stub.  For a rename this prevents deleting servers/VSs that
+        # the new wideIP still needs.
         vs_cleanup_error = None
         datacenter_name = None
-        if partition in target_config:
-            datacenter_name = target_config[partition].get('dataCenter', None)
+        if partition in cleanup_config:
+            datacenter_name = cleanup_config[partition].get('dataCenter', None)
             if datacenter_name and '/' in datacenter_name:
                 datacenter_name = datacenter_name.split('/')[-1]
-        
+
         try:
             log.info("GTM: Cleaning up unused virtual servers")
-            self.cleanup_unused_virtual_servers(gtm, partition, oldConfig, target_config,
-                                               old_parsed=old_parsed, new_parsed=new_parsed)
+            self.cleanup_unused_virtual_servers(gtm, partition, oldConfig, cleanup_config,
+                                               old_parsed=old_parsed, new_parsed=cleanup_new_parsed)
         except Exception as e:
             log.error("GTM: VS cleanup failed, will still attempt server cleanup: %s", e)
             vs_cleanup_error = e
 
-        # Step 5: Clean up unused GSLB servers using target_config
+        # Step 5: Clean up unused GSLB servers.
         # RESILIENCE FIX: Always attempt, even if VS cleanup failed
         server_cleanup_error = None
         try:
             log.info("GTM: Cleaning up unused GSLB servers")
-            self.cleanup_unused_gslb_servers(gtm, datacenter_name, oldConfig, target_config,
-                                            old_parsed=old_parsed, new_parsed=new_parsed)
+            self.cleanup_unused_gslb_servers(gtm, datacenter_name, oldConfig, cleanup_config,
+                                            old_parsed=old_parsed, new_parsed=cleanup_new_parsed)
         except Exception as e:
             log.error("GTM: GSLB server cleanup also failed: %s", e)
             server_cleanup_error = e
@@ -1050,9 +1089,9 @@ class GTMManager(object):
             self._pending_cleanup = {
                 'partition': partition,
                 'oldConfig': oldConfig,
-                'target_config': target_config,
+                'target_config': cleanup_config,
                 'old_parsed': old_parsed,
-                'new_parsed': new_parsed,
+                'new_parsed': cleanup_new_parsed,
                 'datacenter_name': datacenter_name
             }
             log.debug("GTM: Saved pending cleanup state for retry")
