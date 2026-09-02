@@ -1482,6 +1482,7 @@ def test_confighandler_backoff_timer(request):
 from f5_ctlr_agent.gtm.utils import GTMUtils
 from f5_ctlr_agent.gtm.pool import GTMPool
 from f5_ctlr_agent.gtm.wideip import GTMWideIP
+from f5_ctlr_agent.gtm.snapshot import GTMSnapshot
 
 
 class _DummyMemberResource:
@@ -2300,3 +2301,192 @@ def test_update_gtm_cluster_identifier_only_keeps_existing_digital_asset_id():
     assert mgr._gtm._wideip._cluster_digital_asset_id == 'existing-uid'
     assert mgr._gtm._pool._local_cluster_name == 'cluster-1'
     assert mgr._gtm._pool._cluster_digital_asset_id == 'existing-uid'
+
+
+def test_update_gtm_monitor_toggle_runs_monitor_only_reconcile(monkeypatch):
+    """Monitor-only config changes must run apply_monitor_settings (not delete_update_gtm)."""
+
+    monkeypatch.setattr(bigipconfigdriver.GTMUtils, "pre_process_gtm", lambda *_args, **_kwargs: None)
+
+    class _DummyInfra(object):
+        def __init__(self):
+            self._enable_data_server_monitor = False
+
+    class _DummyPool(object):
+        pass
+
+    class _DummyGTMState(object):
+        def __init__(self):
+            self._pending_cleanup = None
+            self._bigip_host = '10.0.0.1'
+            self._gtm_config = {'Common': {'wideIPs': []}}
+            self._infrastructure = _DummyInfra()
+            self._pool = _DummyPool()
+            self.delete_update_calls = 0
+            self.apply_monitor_calls = 0
+            self.apply_monitor_kwargs = None
+
+        def get_gtm_config(self):
+            return self._gtm_config
+
+        def delete_update_gtm(self, partition, new_gtm_config):
+            self.delete_update_calls += 1
+            assert partition == 'Common'
+            assert new_gtm_config == {'Common': {'wideIPs': []}}
+
+        def apply_monitor_settings(self, partition, new_gtm_config, **kwargs):
+            self.apply_monitor_calls += 1
+            self.apply_monitor_kwargs = kwargs
+            assert partition == 'Common'
+            assert new_gtm_config == {'Common': {'wideIPs': []}}
+
+        def replace_gtm_config(self, config):
+            self._gtm_config = config['config']
+
+    class _DummyManager(object):
+        def __init__(self):
+            self._gtm = _DummyGTMState()
+
+        def is_gtm(self):
+            return True
+
+    handler = bigipconfigdriver.ConfigHandler.__new__(bigipconfigdriver.ConfigHandler)
+    mgr = _DummyManager()
+    handler._managers = [mgr]
+
+    # Same GTM config as cached state; only monitor toggles change.
+    config = {
+        'gtm': {
+            'config': {'Common': {'wideIPs': []}},
+            'deletedTenants': [],
+            'activeTenants': [],
+            'enableDataServerMonitor': True,
+        }
+    }
+
+    incomplete = handler._update_gtm(config)
+
+    assert incomplete == 0
+    assert mgr._gtm.apply_monitor_calls == 1
+    assert mgr._gtm.delete_update_calls == 0
+    assert mgr._gtm.apply_monitor_kwargs == {
+        'reconcile_pool': False,
+        'reconcile_server': True,
+    }
+    assert mgr._gtm._infrastructure._enable_data_server_monitor is True
+
+
+def test_wideip_fully_exists_detects_cluster_attribute_drift():
+    """Snapshot-based existence check returns False on pool/server monitor or fallback drift."""
+    helper = GTMSnapshot(gtm=None, partition='Common',
+                         local_cluster_name='cluster-1',
+                         cluster_digital_asset_id='uid-1')
+
+    wideip_cfg = {
+        'name': 'app.example.com',
+        'pools': [{
+            'name': 'app.example.com',
+            'fallbackMode': 'return-to-dns',
+            'poolMonitorRef': '/Common/tcp',
+            'members': ['10.1.1.1|10.2.2.2|80'],
+        }],
+    }
+
+    pool_name = GTMUtils.format_pool_name('app.example.com', 'cluster-1', 'uid-1')
+    server_name = GTMUtils.format_server_name('10.1.1.1', 'cluster-1', 'uid-1')
+
+    snapshot = {
+        'wideips': {'app.example.com'},
+        'pools': {pool_name},
+        'pool_members': {pool_name: {server_name + ':vs-cluster-1-10-2-2-2-80'}},
+        'pool_monitors': {pool_name: '/Common/http'},
+        'pool_fallback_mode': {pool_name: 'fallback-ip'},
+        'pool_fallback_ip': {pool_name: '10.10.10.10'},
+        'servers': {server_name},
+        'server_monitors': {server_name: ''},
+    }
+
+    assert helper.wideip_fully_exists(
+        wideip_cfg, snapshot, enable_data_server_monitor=True) is False
+
+
+def test_wideip_fully_exists_true_when_members_and_cluster_attributes_match():
+    """Snapshot-based existence check returns True when members and cluster-wide attributes match."""
+    helper = GTMSnapshot(gtm=None, partition='Common',
+                         local_cluster_name='cluster-1',
+                         cluster_digital_asset_id='uid-1')
+
+    wideip_cfg = {
+        'name': 'app.example.com',
+        'pools': [{
+            'name': 'app.example.com',
+            'fallbackMode': 'return-to-dns',
+            'poolMonitorRef': '/Common/tcp',
+            'members': ['10.1.1.1|10.2.2.2|80'],
+        }],
+    }
+
+    pool_name = GTMUtils.format_pool_name('app.example.com', 'cluster-1', 'uid-1')
+    server_name = GTMUtils.format_server_name('10.1.1.1', 'cluster-1', 'uid-1')
+
+    snapshot = {
+        'wideips': {'app.example.com'},
+        'pools': {pool_name},
+        'pool_members': {pool_name: {server_name + ':vs-cluster-1-10-2-2-2-80'}},
+        'pool_monitors': {pool_name: '/Common/tcp'},
+        'pool_fallback_mode': {pool_name: 'return-to-dns'},
+        'pool_fallback_ip': {pool_name: ''},
+        'servers': {server_name},
+        'server_monitors': {server_name: '/Common/gateway_icmp'},
+        'wideip_attrs': {
+            'app.example.com': {
+                'aliases': [],
+                'poolLbMode': 'round-robin',
+            }
+        },
+    }
+
+    assert helper.wideip_fully_exists(
+        wideip_cfg, snapshot, enable_data_server_monitor=True) is True
+
+
+def test_wideip_fully_exists_detects_alias_drift_from_cached_snapshot_attrs():
+    """Alias drift is detected from cached snapshot attrs without extra WideIP loads."""
+    helper = GTMSnapshot(gtm=None, partition='Common',
+                         local_cluster_name='cluster-1',
+                         cluster_digital_asset_id='uid-1')
+
+    wideip_cfg = {
+        'name': 'app.example.com',
+        'aliases': ['a.example.com'],
+        'pools': [{
+            'name': 'app.example.com',
+            'fallbackMode': 'return-to-dns',
+            'poolMonitorRef': '/Common/tcp',
+            'members': ['10.1.1.1|10.2.2.2|80'],
+        }],
+    }
+
+    pool_name = GTMUtils.format_pool_name('app.example.com', 'cluster-1', 'uid-1')
+    server_name = GTMUtils.format_server_name('10.1.1.1', 'cluster-1', 'uid-1')
+    snapshot = {
+        'wideips': {'app.example.com'},
+        'pools': {pool_name},
+        'pool_members': {pool_name: {server_name + ':vs-cluster-1-10-2-2-2-80'}},
+        'pool_monitors': {pool_name: '/Common/tcp'},
+        'pool_fallback_mode': {pool_name: 'return-to-dns'},
+        'pool_fallback_ip': {pool_name: ''},
+        'servers': {server_name},
+        'server_monitors': {server_name: '/Common/gateway_icmp'},
+        'wideip_attrs': {
+            'app.example.com': {
+                'aliases': ['other.example.com'],
+                'poolLbMode': 'round-robin',
+            }
+        },
+    }
+
+    assert helper.wideip_fully_exists(
+        wideip_cfg, snapshot, enable_data_server_monitor=True) is False
+
+

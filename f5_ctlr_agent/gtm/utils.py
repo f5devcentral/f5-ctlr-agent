@@ -58,7 +58,33 @@ class GTMUtils:
         if local_cluster_name:
             return "{}_{}".format(local_cluster_name, name)
         return name
-    
+
+    @staticmethod
+    def default_data_server_monitor():
+        """Return the GTM server monitor path used for dataServerMonitor enablement."""
+        return '/Common/gateway_icmp'
+
+    @staticmethod
+    def as_bool(value, default=False):
+        """Parse bool-like values from config payloads safely.
+
+        Accepts native booleans and common string/int representations.
+        """
+        if value is None:
+            return default
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, str):
+            lowered = value.strip().lower()
+            if lowered in ('true', '1', 'yes', 'on'):
+                return True
+            if lowered in ('false', '0', 'no', 'off', ''):
+                return False
+            return default
+        if isinstance(value, (int, float)):
+            return bool(value)
+        return default
+
     @staticmethod
     def _build_server_name(ip_part, local_cluster_name=None):
         """Build the GSLB server name from its components.

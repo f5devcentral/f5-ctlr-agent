@@ -59,17 +59,28 @@ class GTMSnapshot:
         Returns:
             dict: Snapshot with keys:
                   - servers: set of server names
-                  - server_vs: dict {server_name: set(vs_names)} 
+                  - server_vs: dict {server_name: set(vs_names)}
+                  - server_monitors: dict {server_name: monitor_path_or_empty}
                   - pools: set of pool names
                   - pool_members: dict {pool_name: set(member_refs)}
+                  - pool_monitors: dict {pool_name: joined_monitor_string}
+                  - pool_fallback_mode: dict {pool_name: fallback_mode}
+                  - pool_fallback_ip: dict {pool_name: fallback_ip_or_empty}
                   - wideips: set of wideip names
+                  - wideip_attrs: dict {wideip_name: {'aliases': [...], 'poolLbMode': str}}
         """
         snapshot = {
             'servers': set(),
             'server_vs': {},
+            'server_monitors': {},
             'pools': set(),
             'pool_members': {},
+            'pool_monitors': {},
+            'pool_fallback_mode': {},
+            'pool_fallback_ip': {},
             'wideips': set(),
+            # Filled lazily in wideip_fully_exists to avoid per-wideip GETs.
+            'wideip_attrs': {},
         }
 
         start_time = time.time()
@@ -84,6 +95,7 @@ class GTMSnapshot:
         for srv in all_servers:
             snapshot['servers'].add(srv.name)
             snapshot['server_vs'][srv.name] = set()
+            snapshot['server_monitors'][srv.name] = getattr(srv, 'monitor', '') or ''
             # DO NOT fetch VSs here — causes 490KB response + slow SDK parsing
 
         server_time = time.time()
@@ -118,6 +130,9 @@ class GTMSnapshot:
                 pool_obj = self._gtm.pools.a_s.a.load(name=pool_name, partition=self._partition)
                 snapshot['pools'].add(pool_name)
                 pools_found += 1
+                snapshot['pool_monitors'][pool_name] = getattr(pool_obj, 'monitor', '') or ''
+                snapshot['pool_fallback_mode'][pool_name] = getattr(pool_obj, 'fallbackMode', '') or ''
+                snapshot['pool_fallback_ip'][pool_name] = getattr(pool_obj, 'fallbackIp', '') or ''
                 # CRITICAL: Do NOT return empty set on error - would corrupt snapshot
                 snapshot['pool_members'][pool_name] = {
                     m.name for m in pool_obj.members_s.get_collection()
@@ -177,7 +192,50 @@ class GTMSnapshot:
 
         return snapshot
     
-    def wideip_fully_exists(self, config, snapshot):
+    def _build_effective_pool_monitor(self, pool):
+        """Build desired BIG-IP pool monitor string for one pool config."""
+        monitor_refs = []
+        for monitor in pool.get("monitors", []) or []:
+            monitor_name = GTMUtils.apply_cluster_prefix(
+                monitor.get('name'), self._local_cluster_name)
+            if monitor_name:
+                monitor_refs.append("/{}/{}".format(self._partition, monitor_name))
+
+        pool_monitor_ref = pool.get('poolMonitorRef')
+        if pool_monitor_ref and pool_monitor_ref not in monitor_refs:
+            monitor_refs.append(pool_monitor_ref)
+
+        return " and ".join(monitor_refs)
+
+    def _normalize_monitor_set(self, monitor_str):
+        if not monitor_str:
+            return set()
+        return {item.strip() for item in monitor_str.split(" and ") if item.strip()}
+
+    def _normalize_aliases(self, aliases):
+        if not aliases:
+            return []
+        return sorted([alias.strip() for alias in aliases if isinstance(alias, str) and alias.strip()])
+
+    def _get_wideip_attrs_from_snapshot_or_bigip(self, wideip_name, snapshot):
+        attrs_cache = snapshot.setdefault('wideip_attrs', {})
+        if wideip_name in attrs_cache:
+            return attrs_cache[wideip_name]
+
+        try:
+            wideip = self._gtm.wideips.a_s.a.load(name=wideip_name, partition=self._partition)
+            attrs = {
+                'aliases': list(getattr(wideip, 'aliases', None) or []),
+                'poolLbMode': getattr(wideip, 'poolLbMode', '') or '',
+            }
+            attrs_cache[wideip_name] = attrs
+            return attrs
+        except Exception as e:
+            log.debug("GTM: [SNAPSHOT] Could not lazily load WideIP %s attributes: %s",
+                      wideip_name, str(e))
+            return None
+
+    def wideip_fully_exists(self, config, snapshot, enable_data_server_monitor=False):
         """Check if wideIP fully exists with correct members.
         
         Zero API calls — pure in-memory comparison.
@@ -185,7 +243,8 @@ class GTMSnapshot:
         Args:
             config (dict): WideIP configuration to check
             snapshot (dict): State snapshot from snapshot_bigip_state()
-            
+            enable_data_server_monitor (bool): Desired cluster-level server monitor flag
+
         Returns:
             bool: True if wideIP exists with all correct pool members
         """
@@ -195,6 +254,8 @@ class GTMSnapshot:
         if wideip_name not in snapshot['wideips']:
             return False
         
+        expected_servers = set()
+
         # Check all pools exist with correct members
         for pool in config.get('pools', []):
             pool_name = GTMUtils.format_pool_name(
@@ -216,12 +277,47 @@ class GTMSnapshot:
                     local_cluster_name=self._local_cluster_name,
                     digital_asset_id=self._cluster_digital_asset_id)
                 expected_members.add(member_ref)
-            
+                expected_servers.add(member_ref.split(':')[0])
+
             # Get actual members from snapshot
             actual_members = snapshot['pool_members'].get(pool_name, set())
             
             # Members must match exactly
             if expected_members != actual_members:
                 return False
-        
+
+            current_monitor = snapshot['pool_monitors'].get(pool_name, '')
+            desired_monitor = self._build_effective_pool_monitor(pool)
+            if self._normalize_monitor_set(current_monitor) != self._normalize_monitor_set(desired_monitor):
+                return False
+
+            desired_fallback_mode = pool.get('fallbackMode') or 'return-to-dns'
+            current_fallback_mode = snapshot['pool_fallback_mode'].get(pool_name, '')
+            if current_fallback_mode != desired_fallback_mode:
+                return False
+
+            if desired_fallback_mode == 'fallback-ip':
+                desired_fallback_ip = pool.get('fallbackIp') or pool.get('fallback-ip', '')
+                current_fallback_ip = snapshot['pool_fallback_ip'].get(pool_name, '')
+                if desired_fallback_ip and current_fallback_ip != desired_fallback_ip:
+                    return False
+
+        desired_server_monitor = GTMUtils.default_data_server_monitor() if enable_data_server_monitor else ''
+        for server_name in expected_servers:
+            if server_name not in snapshot['servers']:
+                return False
+            current_server_monitor = snapshot['server_monitors'].get(server_name, '') or ''
+            if current_server_monitor != desired_server_monitor:
+                return False
+
+        # Optimized alias drift check: load WideIP attributes only for entries that
+        # already passed pool/member/server checks.
+        desired_aliases = self._normalize_aliases(config.get('aliases') or [])
+        wideip_attrs = self._get_wideip_attrs_from_snapshot_or_bigip(wideip_name, snapshot)
+        if wideip_attrs is None:
+            return False
+        current_aliases = self._normalize_aliases(wideip_attrs.get('aliases') or [])
+        if current_aliases != desired_aliases:
+            return False
+
         return True

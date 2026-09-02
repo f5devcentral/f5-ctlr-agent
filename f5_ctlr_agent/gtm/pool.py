@@ -44,12 +44,6 @@ class GTMPool:
         self._deleted_tenants = deleted_tenants or []
         self._local_cluster_name = local_cluster_name
         self._cluster_digital_asset_id = cluster_digital_asset_id
-        # CR-level pool monitor control (from ExternalBigIPRegistry.spec.enablePoolMonitor)
-        # When False, disables TCP pool monitor for all pools; defaults to True.
-        self._enable_pool_monitor = True
-        # Default pool monitor path - consistent with data server monitor pattern
-        # which hardcodes /Common/gateway_icmp in infrastructure.py
-        self._default_pool_monitor = "/Common/tcp"
 
     def create_pool(self, config, monitors, skip_member_validation=False):
         """Create or update GTM pools from configuration.
@@ -97,17 +91,23 @@ class GTMPool:
                 # PERF FIX #4: Batch attribute updates into a single .update() call
                 needs_update = False
 
-                # Pool monitor handling - consistent with data server monitor pattern:
-                # When _enable_pool_monitor is True, attach /Common/tcp (hardcoded internally).
-                # This mirrors infrastructure.py which hardcodes /Common/gateway_icmp for data servers.
-                # User-defined monitors from pool["monitors"] are combined with the default.
-                effective_monitors = monitors  # user-defined monitors from config
-                if self._enable_pool_monitor:
-                    # Append default pool monitor when enabled
-                    if effective_monitors:
-                        effective_monitors = effective_monitors + " and " + self._default_pool_monitor
-                    else:
-                        effective_monitors = self._default_pool_monitor
+                # Pool monitor is now config-driven via per-pool poolMonitorRef from Go.
+                monitor_refs = []
+                for monitor in pool.get("monitors", []) or []:
+                    monitor_name = GTMUtils.apply_cluster_prefix(
+                        monitor.get('name'), self._local_cluster_name)
+                    if monitor_name:
+                        monitor_refs.append("/{}/{}".format(self.partition, monitor_name))
+
+                # Backward compatibility for callers still passing precomputed monitors.
+                if not monitor_refs and monitors:
+                    monitor_refs.extend([m.strip() for m in monitors.split(" and ") if m.strip()])
+
+                pool_monitor_ref = pool.get('poolMonitorRef')
+                if pool_monitor_ref and pool_monitor_ref not in monitor_refs:
+                    monitor_refs.append(pool_monitor_ref)
+
+                effective_monitors = " and ".join(monitor_refs)
 
                 if effective_monitors:
                     if getattr(pl, 'monitor', '') != effective_monitors:

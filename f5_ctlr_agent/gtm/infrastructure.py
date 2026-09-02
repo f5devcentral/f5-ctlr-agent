@@ -271,7 +271,8 @@ class GTMInfrastructure:
                     servers_skipped += 1
 
                     # Reconcile monitor setting on existing server when enableDataServerMonitor changes
-                    desired_monitor = '/Common/gateway_icmp' if self._enable_data_server_monitor else None
+                    # Keep disabled state as empty string so monitor comparisons match snapshot semantics.
+                    desired_monitor = GTMUtils.default_data_server_monitor() if self._enable_data_server_monitor else ''
                     current_monitor = getattr(server_obj, 'monitor', None)
                     if desired_monitor and current_monitor != desired_monitor:
                         log.info("GTM: Attaching ICMP monitor to existing server {}".format(server_name))
@@ -290,7 +291,7 @@ class GTMInfrastructure:
                         addresses=[dataserver_ip],
                         virtual_server_discovery='disabled',
                         description='Managed by: ebc',
-                        monitor='/Common/gateway_icmp' if self._enable_data_server_monitor else None)
+                        monitor=GTMUtils.default_data_server_monitor() if self._enable_data_server_monitor else None)
                     created_server_objects[server_name] = server
                     servers_created += 1
 
