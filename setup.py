@@ -39,7 +39,7 @@ setup(
     license='Apache License, Version 2.0',
     version=f5_ctlr_agent.__version__,
     author='F5 Networks',
-    url='https://github.com/f5devcentral/f5-ctlr-agent',
+    url='https://github.com/charanm08/f5-ctlr-agent',
     keywords=['F5', 'big-ip'],
     scripts=['f5_ctlr_agent/bigipconfigdriver.py'],
     install_requires=install_reqs,
