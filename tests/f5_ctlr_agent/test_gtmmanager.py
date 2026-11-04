@@ -322,3 +322,100 @@ def test_delete_gtm_wideip_and_hm():
     mgr.get_gtm_config()["Common"]["wideIPs"][0]["pools"] = []
     mgr.delete_gtm_wideip(bigip.tm.gtm, "Common", "wip-1")
     assert len(mgr.get_gtm_config()["Common"]["wideIPs"]) == 0
+
+
+def test_gtm_empty_pools_reconciliation():
+    """Test reconciliation when an ExternalDNS wideIP has all pools removed (spec.pools: [])."""
+    bigip = create_mock_gtm_bigip()
+    mgr = GTMManager(bigip, "Common")
+
+    initial_config = {
+        "activeTenants": ["test"],
+        "deletedTenants": [],
+        "config": {
+            "Common": {
+                "wideIPs": [
+                    {
+                        "name": "foo.com",
+                        "recordType": "A",
+                        "LoadBalancingMode": "round-robin",
+                        "loadBalancingMode": "round-robin",
+                        "pools": [
+                            {
+                                "name": "foo_pool",
+                                "order": 0,
+                                "ratio": 1,
+                                "recordType": "A",
+                                "fallbackMode": "return-to-dns",
+                                "LoadBalancingMode": "round-robin",
+                                "loadBalancingMode": "round-robin",
+                                "members": ["/Common/LTM:/test/Shared/vs-foo"],
+                                "monitors": [{"name": "foo_mon", "type": "http"}]
+                            }
+                        ]
+                    },
+                    {
+                        "name": "bar.com",
+                        "recordType": "A",
+                        "LoadBalancingMode": "round-robin",
+                        "loadBalancingMode": "round-robin",
+                        "pools": [
+                            {
+                                "name": "bar_pool",
+                                "order": 0,
+                                "ratio": 1,
+                                "recordType": "A",
+                                "fallbackMode": "return-to-dns",
+                                "LoadBalancingMode": "round-robin",
+                                "loadBalancingMode": "round-robin",
+                                "members": ["/Common/LTM:/test/Shared/vs-bar"],
+                                "monitors": [{"name": "bar_mon", "type": "http"}]
+                            }
+                        ]
+                    }
+                ]
+            }
+        }
+    }
+    mgr.replace_gtm_config(initial_config)
+
+    # bar.com has its pools drained (pools: [])
+    updated_config = {
+        "Common": {
+            "wideIPs": [
+                {
+                    "name": "foo.com",
+                    "recordType": "A",
+                    "LoadBalancingMode": "round-robin",
+                    "loadBalancingMode": "round-robin",
+                    "pools": [
+                        {
+                            "name": "foo_pool",
+                            "order": 0,
+                            "ratio": 1,
+                            "recordType": "A",
+                            "fallbackMode": "return-to-dns",
+                            "LoadBalancingMode": "round-robin",
+                            "loadBalancingMode": "round-robin",
+                            "members": ["/Common/LTM:/test/Shared/vs-foo"],
+                            "monitors": [{"name": "foo_mon", "type": "http"}]
+                        }
+                    ]
+                },
+                {
+                    "name": "bar.com",
+                    "recordType": "A",
+                    "LoadBalancingMode": "round-robin",
+                    "loadBalancingMode": "round-robin",
+                    "pools": []
+                }
+            ]
+        }
+    }
+
+    # Must execute without UnboundLocalError: 'all_monitors' or IndexError
+    mgr.delete_update_gtm("Common", updated_config)
+
+    # create_gtm must also handle empty pools safely
+    mgr.create_gtm("Common", updated_config)
+

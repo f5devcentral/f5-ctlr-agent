@@ -826,7 +826,7 @@ class GTMManager(object):
             if "wideIPs" in gtmConfig[partition]:
                 if gtmConfig[partition]['wideIPs'] is not None:
                     for config in gtmConfig[partition]['wideIPs']:
-                        for pool in config['pools']:
+                        for pool in config.get('pools', []):
                             if "monitors" in pool.keys():
                                 for monitor in pool['monitors']:
                                     if "send" in monitor.keys():
@@ -881,6 +881,7 @@ class GTMManager(object):
                         for config in gtmConfig[partition]['wideIPs']:
                             monitor = ""
                             newPools = dict()
+                            all_monitors = ""
                             for pool in config.get('pools', []):
                                 # Pool object
                                 newPools[pool['name']] = {
@@ -976,7 +977,7 @@ class GTMManager(object):
             gtm = self.gtm()
             gtm_pools = []
             for wip in _get_value(gtmConfig, "wideIPs"):
-                gtm_pools += wip["pools"]
+                gtm_pools += wip.get("pools", [])
 
             gtm_members, bigip_members = {}, {}
             # Prepare GTM members from activeConfig and bigip_members from BIGIP based on gtm_members
@@ -1016,7 +1017,8 @@ class GTMManager(object):
                 if gtmConfig[partition]['wideIPs'] is not None:
                     for config in gtmConfig[partition]['wideIPs']:
                         newPools = dict()
-                        for pool in config['pools']:
+                        all_monitors = ""
+                        for pool in config.get('pools', []):
                             # Pool object
                             newPools[pool['name']] = {
                                 'name': pool['name'], 'partition': partition, 'ratio': 1, 'order': pool['order']
@@ -1081,7 +1083,7 @@ class GTMManager(object):
     def create_gtm_pool(self, gtm, partition, config, monitors):
         """ Create gtm pools """
         try:
-            for pool in config['pools']:
+            for pool in config.get('pools', []):
                 exist = gtm.pools.a_s.a.exists(name=pool['name'], partition=partition)
                 log.debug("Pool: {}, exists: {}".format(pool["name"], exist))
                 if not exist:
@@ -1514,9 +1516,9 @@ class GTMManager(object):
             pools1 = []
             pools2 = []
             for wip in _get_value(d1,"wideIPs"):
-                pools1 += wip["pools"]
+                pools1 += wip.get("pools", [])
             for wip in _get_value(d2,"wideIPs"):
-                pools2 += wip["pools"]
+                pools2 += wip.get("pools", [])
 
             pool_set1 = set([p["name"] for p in pools1])
             pool_set2 = set([p["name"] for p in pools2])
@@ -1544,9 +1546,9 @@ class GTMManager(object):
             pools1 = []
             pools2 = []
             for wip in _get_value(d1,"wideIPs"):
-                pools1 += wip["pools"]
+                pools1 += wip.get("pools", [])
             for wip in _get_value(d2,"wideIPs"):
-                pools2 += wip["pools"]
+                pools2 += wip.get("pools", [])
 
             monitors1, monitors2 = [], []
             for p in pools1:
@@ -1607,7 +1609,7 @@ class GTMManager(object):
             di = d["wideIPs"]
         for wip in di:
             wip_name = wip["name"]
-            for pool in wip["pools"]:
+            for pool in wip.get("pools", []):
                 pool_name = pool["name"]
                 try:
                     rev_map["pools"][pool_name].append(wip_name)
