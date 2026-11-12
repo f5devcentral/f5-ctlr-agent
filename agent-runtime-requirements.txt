@@ -1,4 +1,4 @@
-f5-cccl @ git+https://github.com/f5devcentral/f5-cccl.git@fea1f0dc7094238dea6968a380655ff0890b71df
+f5-cccl @ git+https://github.com/f5devcentral/f5-cccl.git@a85c7b6814a50cc83547b0699abb1169c842cc8b
 pyinotify==0.9.6
 pyasyncore==1.0.4
 requests==2.33.0
