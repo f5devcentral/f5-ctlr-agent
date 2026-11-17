@@ -39,7 +39,8 @@ class GTMInfrastructure:
     - Cleanup of unused servers and virtual servers
     """
     
-    def __init__(self, gtm, partition, local_cluster_name=None, cluster_digital_asset_id=None):
+    def __init__(self, gtm, partition, local_cluster_name=None, cluster_digital_asset_id=None,
+                 bulk=None):
         """Initialize GTM Infrastructure manager.
 
         Args:
@@ -47,7 +48,9 @@ class GTMInfrastructure:
             partition (str): Partition to manage
             local_cluster_name (str, optional): Cluster identifier
             cluster_digital_asset_id (str, optional): Cluster digital asset ID for server naming
+            bulk (GTMBulk, optional): Transactional batch creator for large virtual server sets
         """
+        self._bulk = bulk
         self._gtm = gtm
         self._partition = partition
         self._local_cluster_name = local_cluster_name
@@ -333,10 +336,16 @@ class GTMInfrastructure:
                                 server_name, str(e)))
                             existing_vs = set()
 
-                for member_ip, vs_name, destination in vs_set:
-                    if vs_name in existing_vs:
-                        total_vs_skipped += 1
-                        continue
+                pending = [vs for vs in sorted(vs_set) if vs[1] not in existing_vs]
+                total_vs_skipped += len(vs_set) - len(pending)
+
+                # Large sets: create in transaction batches; failed batches stay in pending.
+                if self._bulk is not None and self._bulk.enabled(len(pending)):
+                    before = len(pending)
+                    pending = self._bulk.create_virtual_servers(server_name, pending)
+                    total_vs_created += before - len(pending)
+
+                for member_ip, vs_name, destination in pending:
                     try:
                         self.create_virtual_server_on_gslb_server(
                             server_name=server_name,
