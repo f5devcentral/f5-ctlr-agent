@@ -74,6 +74,17 @@ class GTMWideIP:
         our_parts = [p for p in [our_name, our_asset] if p]
         return '-'.join(our_parts)
 
+    def build_description(self):
+        """Return the ownership description for new WideIPs, or None when unscoped."""
+        if not (self._cluster_digital_asset_id or self._local_cluster_name):
+            return None
+        parts = []
+        if self._local_cluster_name:
+            parts.append(self._local_cluster_name)
+        if self._cluster_digital_asset_id:
+            parts.append(self._cluster_digital_asset_id)
+        return "managed-by: ebc | cluster: {}".format("-".join(parts))
+
     def is_wideip_owned_by_this_cluster(self, wideip_name, wideip=None):
         """Return True when this cluster owns the WideIP or legacy mode allows it.
 
@@ -151,15 +162,7 @@ class GTMWideIP:
             newPools = self._normalize_pool_map(newPools)
 
             # Enhancement 4: Build ownership description for multi-cluster scoping
-            description = None
-            if self._cluster_digital_asset_id or self._local_cluster_name:
-                parts = []
-                if self._local_cluster_name:
-                    parts.append(self._local_cluster_name)
-                if self._cluster_digital_asset_id:
-                    parts.append(self._cluster_digital_asset_id)
-                cluster_part = "-".join(parts)
-                description = "managed-by: ebc | cluster: {}".format(cluster_part)
+            description = self.build_description()
 
             # Enhancement 2: Alias support
             aliases = config.get('aliases') or []
