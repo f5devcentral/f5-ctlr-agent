@@ -414,6 +414,15 @@ class GTMUtils:
                                 monitor["send"] = monitor["send"].replace("\n", "\\n")
     
     @staticmethod
+    def is_not_found_error(exception):
+        """Return True when the exception means the BIG-IP resource does not exist (HTTP 404)."""
+        response = getattr(exception, 'response', None)
+        if response is not None and getattr(response, 'status_code', None) == 404:
+            return True
+        error_str = str(exception).lower()
+        return '404' in error_str or 'not found' in error_str
+
+    @staticmethod
     def is_transient_error(exception):
         """Determine if an error is transient (retriable) vs permanent (not retriable).
         

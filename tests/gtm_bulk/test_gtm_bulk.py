@@ -299,3 +299,229 @@ def test_create_gtm_falls_back_per_object_when_batches_fail():
     assert icrs.committed == []
     assert gtm.wideips.a_s.a.create.call_count == 30
     assert gtm.pools.a_s.a.create.call_count == 30
+
+
+# -- incremental-path optimizations -------------------------------------------
+def _cleanup(root=None):
+    from f5_ctlr_agent.gtm.cleanup import GTMCleanup
+    gtm = mock.MagicMock()
+    return GTMCleanup(gtm, 'Common', local_cluster_name=CLUSTER,
+                      cluster_digital_asset_id=UID, mgmt_root=root), gtm
+
+
+def _parsed(members):
+    return {'all_member_refs': set(members),
+            'all_server_names': {m.split(':')[0] for m in members}}
+
+
+def test_gslb_server_scan_skipped_when_push_removes_nothing():
+    cleanup, gtm = _cleanup()
+    old = _parsed(['srvA:vs1'])
+    new = _parsed(['srvA:vs1', 'srvA:vs2'])  # pure add
+
+    cleanup.cleanup_unused_gslb_servers('dc1', old_parsed=old, new_parsed=new)
+
+    gtm.servers.get_collection.assert_not_called()
+
+
+def test_gslb_server_scan_limited_to_servers_that_lost_members():
+    cleanup, gtm = _cleanup()
+    srv_a = mock.MagicMock()
+    srv_a.name = 'srvA'
+    srv_a.datacenter = '/Common/dc1'
+    srv_a.virtual_servers_s.get_collection.return_value = []
+    srv_b = mock.MagicMock()
+    srv_b.name = 'srvB'
+    srv_b.datacenter = '/Common/dc1'
+    gtm.servers.get_collection.return_value = [srv_a, srv_b]
+    old = _parsed(['srvA:vs1', 'srvB:vs1'])
+    new = _parsed(['srvB:vs1'])
+
+    cleanup.cleanup_unused_gslb_servers('dc1', old_parsed=old, new_parsed=new)
+
+    srv_a.delete.assert_called_once()
+    srv_b.virtual_servers_s.get_collection.assert_not_called()
+
+
+def test_gslb_server_scan_is_full_when_forced_for_retry():
+    cleanup, gtm = _cleanup()
+    gtm.servers.get_collection.return_value = []
+    old = _parsed(['srvA:vs1'])
+
+    cleanup.cleanup_unused_gslb_servers('dc1', old_parsed=old, new_parsed=old, force_scan=True)
+
+    gtm.servers.get_collection.assert_called_once()
+
+
+def test_unused_virtual_servers_deleted_directly_ignoring_404():
+    icrs = mock.MagicMock()
+    not_found = Exception('404 Not Found')
+    icrs.delete.side_effect = [None, not_found]
+    cleanup, gtm = _cleanup(_root(icrs))
+
+    cleanup.cleanup_unused_virtual_servers(
+        None, None, old_parsed=_parsed(['srvA:vs1', 'srvA:vs2']), new_parsed=_parsed([]))
+
+    assert [c[0][0] for c in icrs.delete.call_args_list] == [
+        BASE + 'tm/gtm/server/~Common~srvA/virtual-servers/vs1',
+        BASE + 'tm/gtm/server/~Common~srvA/virtual-servers/vs2']
+    gtm.servers.server.load.assert_not_called()
+
+
+def _orchestrate(vs_count):
+    from f5_ctlr_agent.gtm.infrastructure import GTMInfrastructure
+    gtm = mock.MagicMock()
+    server = gtm.servers.server.load.return_value
+    server.monitor = ''
+    infra = GTMInfrastructure(gtm, 'Common', CLUSTER, UID)
+    vs = {('10.1.0.{}'.format(i), 'vs-{}'.format(i), '10.1.0.{}:80'.format(i))
+          for i in range(vs_count)}
+    parsed = {'dataservers': {'10.200.0.1'}, 'vs_inventory': {SERVER: vs}}
+    snapshot = {'servers': {SERVER}, 'server_vs': {SERVER: set()}}
+    infra.orchestrate_with_snapshot(
+        {'Common': {'dataCenter': 'dc1'}}, parsed, snapshot)
+    return server
+
+
+def test_orchestrate_posts_without_listing_virtual_servers_for_small_sets():
+    server = _orchestrate(5)
+
+    server.virtual_servers_s.get_collection.assert_not_called()
+    assert server.virtual_servers_s.virtual_server.create.call_count == 5
+
+
+def test_orchestrate_lists_virtual_servers_for_large_sets():
+    server = _orchestrate(25)
+
+    server.virtual_servers_s.get_collection.assert_called_once()
+
+
+# -- inline create and fast delete (per-object path) ---------------------------
+def _pool_cfg(members=None, monitor='/Common/tcp'):
+    return {'pools': [{
+        'name': 'app.example.com', 'LoadBalancingMode': 'round-robin',
+        'fallbackMode': 'return-to-dns', 'order': 0, 'poolMonitorRef': monitor,
+        'DataServer': '10.200.0.1',
+        'members': members if members is not None else ['10.1.0.1:80', '10.1.0.2:80']}]}
+
+
+POOL = 'pool-uid1-clu-app.example.com'
+MEMBERS = [SERVER + ':vs-clu-10-1-0-1-80', SERVER + ':vs-clu-10-1-0-2-80']
+
+
+def _pool_mgr():
+    from f5_ctlr_agent.gtm.pool import GTMPool
+    gtm = mock.MagicMock()
+    return GTMPool(gtm, 'Common', local_cluster_name=CLUSTER, cluster_digital_asset_id=UID), gtm
+
+
+def test_new_pool_created_with_monitor_and_members_in_one_request():
+    mgr, gtm = _pool_mgr()
+    snapshot = {'pools': set(), 'pool_members': {}}
+
+    mgr.create_pool(_pool_cfg(), '', skip_member_validation=True, snapshot=snapshot)
+
+    gtm.pools.a_s.a.exists.assert_not_called()
+    kwargs = gtm.pools.a_s.a.create.call_args[1]
+    assert kwargs['monitor'] == '/Common/tcp'
+    assert kwargs['members'] == [{'name': m, 'partition': 'Common'} for m in MEMBERS]
+    gtm.pools.a_s.a.create.return_value.members_s.member.create.assert_not_called()
+    assert POOL in snapshot['pools']
+
+
+def test_pool_falls_back_to_per_object_path_when_inline_create_rejected():
+    mgr, gtm = _pool_mgr()
+    gtm.pools.a_s.a.create.side_effect = [Exception('409 already exists'), mock.MagicMock()]
+    gtm.pools.a_s.a.exists.return_value = False
+
+    mgr.create_pool(_pool_cfg(), '', skip_member_validation=True,
+                    snapshot={'pools': set(), 'pool_members': {}})
+
+    assert gtm.pools.a_s.a.create.call_count == 2
+    assert 'members' not in gtm.pools.a_s.a.create.call_args[1]
+
+
+def test_existing_pool_only_gets_members_missing_from_snapshot():
+    mgr, gtm = _pool_mgr()
+    pl = gtm.pools.a_s.a.load.return_value
+    pl.monitor = '/Common/tcp'
+    pl.fallbackMode = 'return-to-dns'
+    pl.fallbackIp = 'any'
+    pl.loadBalancingMode = 'round-robin'
+    snapshot = {'pools': {POOL}, 'pool_members': {POOL: {MEMBERS[0]}}}
+
+    mgr.create_pool(_pool_cfg(), '', skip_member_validation=True, snapshot=snapshot)
+
+    gtm.pools.a_s.a.exists.assert_not_called()
+    gtm.pools.a_s.a.create.assert_not_called()
+    created = [c[1]['name'] for c in pl.members_s.member.create.call_args_list]
+    assert created == [MEMBERS[1]]
+
+
+def _wideip_mgr():
+    from f5_ctlr_agent.gtm.wideip import GTMWideIP
+    gtm = mock.MagicMock()
+    return GTMWideIP(gtm, 'Common', local_cluster_name=CLUSTER, cluster_digital_asset_id=UID), gtm
+
+
+_WIP = {'name': 'app.example.com', 'LoadBalancingMode': 'round-robin', 'aliases': ['a.example.com']}
+_NEW_POOLS = {'p': {'name': 'app.example.com', 'partition': 'Common', 'ratio': 1, 'order': 0}}
+
+
+def test_new_wideip_created_with_pools_and_owner_in_one_request():
+    mgr, gtm = _wideip_mgr()
+    snapshot = {'wideips': set()}
+
+    mgr.create_wideip(_WIP, dict(_NEW_POOLS), snapshot=snapshot)
+
+    gtm.wideips.a_s.a.exists.assert_not_called()
+    kwargs = gtm.wideips.a_s.a.create.call_args[1]
+    assert kwargs['pools'][0]['name'] == POOL
+    assert UID in kwargs['description']
+    assert kwargs['aliases'] == ['a.example.com']
+    assert 'app.example.com' in snapshot['wideips']
+
+
+def test_rejected_inline_wideip_still_hits_ownership_guard():
+    mgr, gtm = _wideip_mgr()
+    gtm.wideips.a_s.a.create.side_effect = Exception('409 already exists')
+    gtm.wideips.a_s.a.exists.return_value = True
+    gtm.wideips.a_s.a.load.return_value.description = 'managed-by: ebc | cluster: other-uid9'
+
+    mgr.create_wideip(_WIP, dict(_NEW_POOLS), snapshot={'wideips': set()})
+
+    gtm.wideips.a_s.a.load.return_value.update.assert_not_called()
+
+
+def _delete_pool(member_names, uid_members_owned=True):
+    mgr, gtm = _pool_mgr()
+    pool = gtm.pools.a_s.a.load.return_value
+    members = []
+    for name in member_names:
+        m = mock.MagicMock()
+        m.name = name
+        members.append(m)
+    pool.members_s.get_collection.return_value = members
+    gtm.wideips.a_s.a.exists.return_value = False  # wideIP detach is a no-op
+    config = {'Common': {'wideIPs': [{'name': 'app.example.com', 'pools': [
+        {'name': 'app.example.com', 'members': ['10.1.0.1:80'], 'DataServer': '10.200.0.1'}]}]}}
+    mgr.delete_pool('app.example.com', 'app.example.com', working_config=config)
+    return pool, members, config
+
+
+def test_pool_with_only_our_members_is_deleted_without_member_calls():
+    pool, members, config = _delete_pool(MEMBERS)
+
+    pool.delete.assert_called_once()
+    for m in members:
+        m.delete.assert_not_called()
+    pool.members_s.get_collection.assert_called_once()
+    assert config['Common']['wideIPs'][0]['pools'] == []
+
+
+def test_pool_with_foreign_members_keeps_them_and_stays():
+    pool, members, _ = _delete_pool([MEMBERS[0], 'server_other_clu_10_9_9_9:vs-1'])
+
+    members[0].delete.assert_called_once()
+    members[1].delete.assert_not_called()
+    pool.delete.assert_not_called()

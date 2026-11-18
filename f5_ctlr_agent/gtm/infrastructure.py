@@ -39,6 +39,11 @@ class GTMInfrastructure:
     - Cleanup of unused servers and virtual servers
     """
     
+    # Servers needing fewer virtual servers than this are not listed first: the
+    # missing ones are simply POSTed and "already exists" is accepted. Kept equal to
+    # GTMBulk.MIN_ITEMS so a transaction batch is only built from a known-missing list.
+    VS_LIST_THRESHOLD = 20
+
     def __init__(self, gtm, partition, local_cluster_name=None, cluster_digital_asset_id=None,
                  bulk=None):
         """Initialize GTM Infrastructure manager.
@@ -132,7 +137,7 @@ class GTMInfrastructure:
             server_obj: Pre-loaded server object (optimization)
             
         Returns:
-            Virtual server object from BIG-IP
+            Virtual server object from BIG-IP, or None when it already existed
             
         Note:
             PERF OPTIMIZATION: Accepts pre-loaded server_obj to avoid
@@ -165,7 +170,7 @@ class GTMInfrastructure:
                 if "already exists" in str(e).lower():
                     log.debug("GTM: Virtual server {} already exists on server {}".format(
                         vs_name, server_name))
-                    virtual_server = server_obj.virtual_servers_s.virtual_server.load(name=vs_name)
+                    virtual_server = None
                 else:
                     log.error("GTM: Failed to create virtual server {} on server {}: {}".format(
                         vs_name, server_name, str(e)))
@@ -197,12 +202,12 @@ class GTMInfrastructure:
             only validates existence, it does not create datacenters.
         """
         try:
-            dc_exists = self._gtm.datacenters.datacenter.exists(name=datacenter_name)
-
-            if dc_exists:
-                log.info("GTM: [INFRA] Datacenter {} validated".format(datacenter_name))
+            try:
                 datacenter = self._gtm.datacenters.datacenter.load(name=datacenter_name)
-            else:
+                log.info("GTM: [INFRA] Datacenter {} validated".format(datacenter_name))
+            except Exception as load_err:
+                if not GTMUtils.is_not_found_error(load_err):
+                    raise
                 error_msg = "GTM: Datacenter '{}' does not exist. Please create it manually before deploying GTM configuration.".format(datacenter_name)
                 log.error(error_msg)
                 raise F5CcclError(msg=error_msg)
@@ -313,9 +318,11 @@ class GTMInfrastructure:
 
                 server_obj = created_server_objects[server_name]
 
-                # Lazy VS load: only fetch when we actually need to check
+                # Lazy VS load: only list the server's VSs when many are needed. For a
+                # handful, POST each and accept "already exists" (cheaper than a full list,
+                # which grows with every VS on the server).
                 existing_vs = snapshot['server_vs'].get(server_name, set())
-                if not existing_vs:
+                if not existing_vs and len(vs_set) >= self.VS_LIST_THRESHOLD:
                     try:
                         existing_vs = {vs.name for vs in server_obj.virtual_servers_s.get_collection()}
                         snapshot['server_vs'][server_name] = existing_vs
@@ -347,14 +354,17 @@ class GTMInfrastructure:
 
                 for member_ip, vs_name, destination in pending:
                     try:
-                        self.create_virtual_server_on_gslb_server(
+                        created_vs = self.create_virtual_server_on_gslb_server(
                             server_name=server_name,
                             vs_name=vs_name,
                             destination=destination,
                             enabled=True,
                             server_obj=server_obj)
+                        if created_vs is None:
+                            total_vs_skipped += 1
+                            continue
                         total_vs_created += 1
-                        
+
                         # Progress log every 100 VSs created
                         if total_vs_created % 100 == 0:
                             total_processed = total_vs_created + total_vs_skipped
@@ -410,10 +420,12 @@ class GTMInfrastructure:
 
             for server_name in all_expected_servers:
                 try:
-                    if not self._gtm.servers.server.exists(name=server_name):
-                        continue
-
-                    server = self._gtm.servers.server.load(name=server_name)
+                    try:
+                        server = self._gtm.servers.server.load(name=server_name)
+                    except Exception as load_err:
+                        if GTMUtils.is_not_found_error(load_err):
+                            continue
+                        raise
 
                     vs_list = list(server.virtual_servers_s.get_collection())
 

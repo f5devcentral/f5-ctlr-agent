@@ -98,14 +98,14 @@ class GTMWideIP:
         """
         if wideip is None:
             try:
-                if not self._gtm.wideips.a_s.a.exists(name=wideip_name, partition=self._partition):
+                wideip = self._gtm.wideips.a_s.a.load(name=wideip_name, partition=self._partition)
+            except Exception as e:
+                if GTMUtils.is_not_found_error(e):
                     # WideIP doesn't exist yet — safe to create.
                     log.debug(
                         "GTM: is_wideip_owned_by_this_cluster: %s does not exist yet; allowing create",
                         wideip_name)
                     return True
-                wideip = self._gtm.wideips.a_s.a.load(name=wideip_name, partition=self._partition)
-            except Exception as e:
                 # On error, be conservative — allow creation so we don't silently drop configs.
                 log.warning(
                     "GTM: Error checking wideip %s ownership (allowing creation): %s",
@@ -138,7 +138,36 @@ class GTMWideIP:
             wideip_name, existing_description, uid)
         return False
 
-    def create_wideip(self, config, newPools):
+    def _create_wideip_inline(self, config, newPools, description, aliases):
+        """Create a wideIP with its pools attached in one POST.
+
+        Returns True when created. Returns False when BIG-IP rejected the request
+        (for example the wideIP already exists); the caller then uses the
+        per-object sequence, which enforces the cross-cluster ownership guard.
+        """
+        body = {
+            'name': config['name'],
+            'partition': self._partition,
+            'lastResortPool': "none",
+            'poolLbMode': config['LoadBalancingMode'],
+        }
+        if description:
+            body['description'] = description
+        if aliases:
+            body['aliases'] = aliases
+        if newPools:
+            body['pools'] = list(newPools.values())
+        try:
+            self._gtm.wideips.a_s.a.create(**body)
+        except Exception as e:
+            log.info("GTM: Inline create of wideip {} not applied, using per-object path: {}".format(
+                config['name'], e))
+            return False
+        log.info('GTM: Created wideip {} with {} pool(s) in one request'.format(
+            config['name'], len(newPools)))
+        return True
+
+    def create_wideip(self, config, newPools, snapshot=None):
         """Create wideip and returns the wideip object.
 
         Args:
@@ -148,6 +177,10 @@ class GTMWideIP:
                           - aliases (optional): list of DNS aliases
                           - domain-name / domain-suffix (optional): used by pre_process_gtm
             newPools (dict): Pools to attach to WideIP
+            snapshot (dict, optional): BIG-IP state snapshot taken in the same operation.
+                A wideIP absent from it is created with its pools in one request;
+                a wideIP present in it (or a rejected create) takes the per-object path
+                below, which keeps the ownership guard.
 
         Returns:
             WideIP object or None
@@ -166,6 +199,11 @@ class GTMWideIP:
 
             # Enhancement 2: Alias support
             aliases = config.get('aliases') or []
+
+            if snapshot is not None and config['name'] not in snapshot['wideips']:
+                if self._create_wideip_inline(config, newPools, description, aliases):
+                    snapshot['wideips'].add(config['name'])
+                    return
 
             exist = self._gtm.wideips.a_s.a.exists(name=config['name'], partition=self._partition)
             if not exist:
