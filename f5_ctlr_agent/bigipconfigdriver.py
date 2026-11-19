@@ -44,6 +44,7 @@ from f5_cccl.utils.profile import (delete_unused_ssl_profiles,
 from f5.bigip import ManagementRoot
 from f5_ctlr_agent.gtm.utils import GTMUtils
 from f5_ctlr_agent.gtm.snapshot import GTMSnapshot
+from f5_ctlr_agent.gtm.bulk import GTMBulk
 from f5_ctlr_agent.gtm.infrastructure import GTMInfrastructure
 from f5_ctlr_agent.gtm.wideip import GTMWideIP
 from f5_ctlr_agent.gtm.pool import GTMPool
@@ -678,6 +679,7 @@ class ConfigHandler():
                             mgr._gtm._monitor._local_cluster_name = cluster_id
                             mgr._gtm._snapshot_helper._local_cluster_name = cluster_id
                             mgr._gtm._cleanup._local_cluster_name = cluster_id
+                            mgr._gtm._bulk._local_cluster_name = cluster_id
 
                         # Propagate digitalAssetID to all GTM submodules when it changes.
                         if digital_asset_id is not None and digital_asset_id != mgr._gtm._cluster_digital_asset_id:
@@ -688,6 +690,7 @@ class ConfigHandler():
                             mgr._gtm._pool._cluster_digital_asset_id = digital_asset_id
                             mgr._gtm._snapshot_helper._cluster_digital_asset_id = digital_asset_id
                             mgr._gtm._cleanup._cluster_digital_asset_id = digital_asset_id
+                            mgr._gtm._bulk._cluster_digital_asset_id = digital_asset_id
 
                         prev_enable_data_server_monitor = getattr(
                             mgr._gtm._infrastructure, "_enable_data_server_monitor", False)
@@ -1030,6 +1033,13 @@ class GTMManager(object):
             self._partition,
             local_cluster_name=self._local_cluster_name,
             cluster_digital_asset_id=self._cluster_digital_asset_id)
+        self._bulk = GTMBulk(
+            bigip,
+            self._partition,
+            local_cluster_name=self._local_cluster_name,
+            cluster_digital_asset_id=self._cluster_digital_asset_id,
+            description_builder=self._wideip.build_description)
+        self._infrastructure._bulk = self._bulk
         self._pool = GTMPool(
             self._gtm,
             self._partition,
@@ -1047,7 +1057,8 @@ class GTMManager(object):
             self._partition,
             pool_manager=self._pool,
             local_cluster_name=self._local_cluster_name,
-            cluster_digital_asset_id=self._cluster_digital_asset_id)
+            cluster_digital_asset_id=self._cluster_digital_asset_id,
+            mgmt_root=bigip)
 
     def get_gtm_config(self):
         """ Return the GTM config object"""
@@ -1578,8 +1589,10 @@ class GTMManager(object):
                             if config['name'] not in wideips_to_process:
                                 continue
 
-                            # Ownership check at the top — skip all BIG-IP ops if owned by another cluster
-                            if not self._wideip.is_wideip_owned_by_this_cluster(config['name']):
+                            # Ownership check at the top — skip all BIG-IP ops if owned by another cluster.
+                            # A wideIP absent from the snapshot cannot be owned by anyone yet.
+                            if config['name'] in snapshot['wideips'] and \
+                                    not self._wideip.is_wideip_owned_by_this_cluster(config['name']):
                                 log.warning("GTM: Skipping pool and wideip creation for %s — owned by another cluster", config['name'])
                                 continue
 
@@ -1624,9 +1637,9 @@ class GTMManager(object):
                                     if deleteMember:
                                         log.info("GTM: Members to delete from pool {}: {}".format(
                                             pool['name'], deleteMember))
-                                        pool_obj = None
-                                        if self._pool.gtm.pools.a_s.a.exists(name=oldPool['name'], partition=partition):
-                                            pool_obj = self._pool.gtm.pools.a_s.a.load(name=oldPool['name'], partition=partition)
+                                        pool_obj = self._load_bigip_resource_or_none(
+                                            self._pool.gtm.pools.a_s.a.load, "Pool", oldPool['name'],
+                                            partition=partition)
                                         for member in deleteMember:
                                             member_ref = GTMUtils.convert_member_to_bigip_reference(
                                                 member,
@@ -1637,8 +1650,9 @@ class GTMManager(object):
                                                 member, member_ref, oldPool['name']))
                                             self._pool.remove_member(oldPool['name'], member_ref, pool_obj=pool_obj)
                             try:
-                                self._pool.create_pool(config, all_monitors, skip_member_validation=True)
-                                self._wideip.create_wideip(config, newPools)
+                                self._pool.create_pool(config, all_monitors, skip_member_validation=True,
+                                                       snapshot=snapshot)
+                                self._wideip.create_wideip(config, newPools, snapshot=snapshot)
                             except F5CcclError as e:
                                 raise e
 
@@ -1762,8 +1776,16 @@ class GTMManager(object):
 
             log.info("GTM: [INIT-SYNC] Step 2/5: Taking BIG-IP state snapshot (for {} wideIPs)...".format(
             total_wideips))
-            # Step 0.5: Snapshot BIG-IP state (config-driven, load-only pattern)
-            snapshot = self._snapshot_helper.snapshot_bigip_state(gtmConfig)
+            # Step 0.5: Snapshot BIG-IP state (config-driven, load-only pattern).
+            # Large configs use 3 bulk GETs; any failure falls back to per-object loads.
+            snapshot = None
+            if self._bulk.enabled(total_wideips):
+                try:
+                    snapshot = self._bulk.snapshot_bigip_state(gtmConfig)
+                except Exception as e:
+                    log.warning("GTM: [BULK] Bulk snapshot failed, using per-object snapshot: %s", e)
+            if snapshot is None:
+                snapshot = self._snapshot_helper.snapshot_bigip_state(gtmConfig)
 
             # Step 1: Check if ALL wideIPs are fully present on BIG-IP
             # If yes, skip entire infrastructure orchestration (saves ~2-3 min)
@@ -1815,6 +1837,11 @@ class GTMManager(object):
             expected_members = parsed['members_by_pool']
 
             # Step 3: Process ONLY wideIPs that need it (sequential — BIG-IP serializes internally)
+            # Fresh wideIPs (with their pools) are created in transaction batches first;
+            # whatever is left (existing, custom monitors, failed batches) goes one by one.
+            if self._bulk.enabled(len(wideips_needing_processing)):
+                wideips_needing_processing = self._bulk.create_wideips(
+                    wideips_needing_processing, snapshot)
             for config in wideips_needing_processing:
                 newPools = dict()
                 for pool in config['pools']:
@@ -1833,12 +1860,14 @@ class GTMManager(object):
                             if monitor["name"] != pool["monitors"][-1]["name"]:
                                 all_monitors += " and "
                 # PRE-CHECK: Skip entire wideip entry if owned by another cluster
-                if not self._wideip.is_wideip_owned_by_this_cluster(config['name']):
+                if config['name'] in snapshot['wideips'] and \
+                        not self._wideip.is_wideip_owned_by_this_cluster(config['name']):
                     log.warning("GTM: [INIT-SYNC] Skipping pool and wideip creation for %s — owned by another cluster", config['name'])
                     continue
                 try:
-                    self._pool.create_pool(config, all_monitors, skip_member_validation=True)
-                    self._wideip.create_wideip(config, newPools)
+                    self._pool.create_pool(config, all_monitors, skip_member_validation=True,
+                                           snapshot=snapshot)
+                    self._wideip.create_wideip(config, newPools, snapshot=snapshot)
                 except F5CcclError as e:
                     raise e
 

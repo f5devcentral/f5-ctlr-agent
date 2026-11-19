@@ -27,7 +27,7 @@ class GTMCleanup:
     """
 
     def __init__(self, gtm, partition, pool_manager=None, local_cluster_name=None,
-                 cluster_digital_asset_id=None):
+                 cluster_digital_asset_id=None, mgmt_root=None):
         """Initialize GTM cleanup manager.
         
         Args:
@@ -36,7 +36,10 @@ class GTMCleanup:
             pool_manager: Optional GTMPool instance for member operations
             local_cluster_name (str, optional): Cluster identifier
             cluster_digital_asset_id (str, optional): Cluster digital asset ID
+            mgmt_root (optional): f5-sdk ManagementRoot; when given, unused virtual
+                servers are deleted directly instead of listing the server's virtual servers
         """
+        self._root = mgmt_root
         self.gtm = gtm
         self.partition = partition
         self._pool_manager = pool_manager
@@ -93,6 +96,30 @@ class GTMCleanup:
             log.info("GTM: [SNAPSHOT] Removed {} total orphaned members".format(orphan_count))
         else:
             log.debug("GTM: [SNAPSHOT] No orphaned members found")
+
+    def _delete_virtual_servers_directly(self, server_name, vs_names):
+        """DELETE each virtual server by name, treating 404 as already gone.
+
+        Avoids loading the server and listing all of its virtual servers, which
+        grows with every virtual server on it.
+        """
+        base = '{}tm/gtm/server/~{}~{}/virtual-servers/'.format(
+            self._root._meta_data['uri'], self.partition, server_name)
+        deleted_count = 0
+        for vs_name in sorted(vs_names):
+            try:
+                self._root.icrs.delete(base + vs_name)
+                log.info("GTM: Deleting unused virtual server {} from server {}".format(
+                    vs_name, server_name))
+                deleted_count += 1
+            except Exception as e:
+                if not GTMUtils.is_not_found_error(e):
+                    raise
+                log.debug("GTM: VS {} not found on server {}, already gone".format(
+                    vs_name, server_name))
+        if deleted_count > 0:
+            log.info("GTM: Deleted {} unused virtual server(s) from server {}".format(
+                deleted_count, server_name))
 
     def cleanup_unused_virtual_servers(self, oldConfig, newConfig, 
                                        old_parsed=None, new_parsed=None):
@@ -153,6 +180,10 @@ class GTMCleanup:
             # Batch-process each server ONCE
             for server_name, vs_names_to_delete in deletions_by_server.items():
                 try:
+                    if self._root is not None:
+                        self._delete_virtual_servers_directly(server_name, vs_names_to_delete)
+                        continue
+
                     if not self.gtm.servers.server.exists(name=server_name):
                         log.debug("GTM: Server {} does not exist, skipping".format(server_name))
                         continue
@@ -206,8 +237,12 @@ class GTMCleanup:
         log.info("GTM: ✓ Virtual server cleanup completed successfully")
 
     def cleanup_unused_gslb_servers(self, datacenter_name=None, oldConfig=None, newConfig=None,
-                                    old_parsed=None, new_parsed=None):
+                                    old_parsed=None, new_parsed=None, force_scan=False):
         """Clean up GSLB servers that have no virtual servers.
+
+        A server can only become empty when the push removed some of its members or
+        dropped it from the config, so by default only those servers are inspected,
+        and nothing is read from BIG-IP when the push removes neither.
         
         Args:
             datacenter_name: Optional datacenter filter
@@ -215,6 +250,8 @@ class GTMCleanup:
             newConfig: Current GTM configuration dict
             old_parsed: Optional pre-parsed old config data
             new_parsed: Optional pre-parsed new config data
+            force_scan: Inspect every server of the old config (used when retrying a
+                        failed cleanup)
         
         Raises:
             F5CcclError: On transient cleanup errors (permanent errors logged only)
@@ -231,6 +268,7 @@ class GTMCleanup:
                     local_cluster_name=self._local_cluster_name,
                     digital_asset_id=self.cluster_digital_asset_id)
                 old_servers = old_parsed_data['all_server_names']
+                old_parsed = old_parsed_data
 
             if new_parsed is not None:
                 new_servers = new_parsed['all_server_names']
@@ -241,9 +279,21 @@ class GTMCleanup:
                     local_cluster_name=self._local_cluster_name,
                     digital_asset_id=self.cluster_digital_asset_id)
                 new_servers = new_parsed_data['all_server_names']
+                new_parsed = new_parsed_data
 
-            # Check ALL old servers (may have 0 VSs after VS cleanup)
-            servers_to_check = old_servers.copy()
+            old_members = old_parsed['all_member_refs']
+            new_members = new_parsed['all_member_refs']
+
+            if force_scan:
+                # Check ALL old servers (may have 0 VSs after VS cleanup)
+                servers_to_check = old_servers.copy()
+            else:
+                removed_members = old_members - new_members
+                servers_to_check = (set(old_servers) - set(new_servers)) | {
+                    member_ref.split(':')[0] for member_ref in removed_members}
+                if not servers_to_check:
+                    log.debug("GTM: No members or servers removed, skipping GSLB server cleanup scan")
+                    return
 
             if not servers_to_check:
                 log.debug("GTM: No GSLB servers to check for cleanup")
@@ -370,7 +420,8 @@ class GTMCleanup:
         try:
             log.info("GTM: Retrying GSLB server cleanup")
             self.cleanup_unused_gslb_servers(datacenter_name, oldConfig, target_config,
-                                            old_parsed=old_parsed, new_parsed=new_parsed)
+                                            old_parsed=old_parsed, new_parsed=new_parsed,
+                                            force_scan=True)
         except Exception as e:
             log.error("GTM: GSLB server cleanup retry failed: %s", e)
             server_cleanup_error = e

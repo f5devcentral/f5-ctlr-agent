@@ -45,7 +45,92 @@ class GTMPool:
         self._local_cluster_name = local_cluster_name
         self._cluster_digital_asset_id = cluster_digital_asset_id
 
-    def create_pool(self, config, monitors, skip_member_validation=False):
+    def _resolve_member_names(self, pool):
+        """Return the BIG-IP member names ("server:vs") for a pool config entry."""
+        names = []
+        pool_dataserver = pool.get('DataServer', '')
+
+        for member_spec in pool.get('members') or []:
+            if '|' in member_spec:
+                separator = '|'
+            else:
+                separator = ':'
+
+            parts = member_spec.split(separator)
+
+            if len(parts) == 3:
+                dataserver = parts[0]
+                destination = "{}:{}".format(parts[1], parts[2])
+            elif len(parts) == 2:
+                if not pool_dataserver:
+                    log.warning("GTM: Member '{}' in pool {} has no DataServer. Skipping.".format(
+                        member_spec, pool['name']))
+                    continue
+                dataserver = pool_dataserver
+                destination = "{}:{}".format(parts[0], parts[1])
+            else:
+                log.warning("GTM: Unrecognized member format '{}' in pool {}. Using as-is.".format(
+                    member_spec, pool['name']))
+                names.append(member_spec)
+                continue
+
+            vs_name = GTMUtils.format_vs_name(destination, self._local_cluster_name)
+            server_name = GTMUtils.format_server_name(
+                dataserver, self._local_cluster_name, self._cluster_digital_asset_id)
+            names.append("{}:{}".format(server_name, vs_name))
+        return names
+
+    def _effective_monitors(self, pool, monitors):
+        """Return the " and "-joined monitor refs the pool should carry."""
+        # Pool monitor is config-driven via per-pool poolMonitorRef from Go.
+        monitor_refs = []
+        for monitor in pool.get("monitors", []) or []:
+            monitor_name = GTMUtils.apply_cluster_prefix(
+                monitor.get('name'), self._local_cluster_name)
+            if monitor_name:
+                monitor_refs.append("/{}/{}".format(self.partition, monitor_name))
+
+        # Backward compatibility for callers still passing precomputed monitors.
+        if not monitor_refs and monitors:
+            monitor_refs.extend([m.strip() for m in monitors.split(" and ") if m.strip()])
+
+        pool_monitor_ref = pool.get('poolMonitorRef')
+        if pool_monitor_ref and pool_monitor_ref not in monitor_refs:
+            monitor_refs.append(pool_monitor_ref)
+
+        return " and ".join(monitor_refs)
+
+    def _create_pool_inline(self, pool_name, pool, fallback_mode, fallback_ip,
+                            effective_monitors, member_names):
+        """Create a pool with its monitor and members in one POST.
+
+        Returns the pool object, or None when BIG-IP rejected it (for example the
+        pool already exists); the caller then uses the per-object sequence, which
+        reconciles existing pools and reports real errors.
+        """
+        body = {
+            'name': pool_name,
+            'partition': self.partition,
+            'fallbackMode': fallback_mode,
+            'loadBalancingMode': pool['LoadBalancingMode'],
+        }
+        if fallback_ip and fallback_mode == 'fallback-ip':
+            body['fallbackIp'] = fallback_ip
+        if effective_monitors:
+            body['monitor'] = effective_monitors
+        if member_names:
+            body['members'] = [{'name': name, 'partition': 'Common'} for name in member_names]
+        try:
+            pl = self.gtm.pools.a_s.a.create(**body)
+        except Exception as e:
+            log.info("GTM: Inline create of pool {} not applied, using per-object path: {}".format(
+                pool_name, e))
+            return None
+        log.info("GTM: Created pool {} with {} member(s) in one request".format(
+            pool_name, len(member_names)))
+        return pl
+
+    def create_pool(self, config, monitors, skip_member_validation=False, snapshot=None):
         """Create or update GTM pools from configuration.
         
         Args:
@@ -53,6 +138,10 @@ class GTMPool:
             monitors: Monitor string (e.g., "/Common/http and /Common/tcp")
             skip_member_validation: If True, bypass existence checks for members
                                    (used when infrastructure is pre-orchestrated)
+            snapshot: Optional BIG-IP state snapshot taken in the same operation.
+                      Pools absent from it are created with their members in one
+                      request; for pools present in it, members already on BIG-IP
+                      are not POSTed again.
         
         Raises:
             F5CcclError: On pool creation or update failure
@@ -71,7 +160,20 @@ class GTMPool:
                 fallback_mode = pool.get('fallbackMode') or 'return-to-dns'
                 fallback_ip = pool.get('fallbackIp') or pool.get('fallback-ip', '')
 
-                exist = self.gtm.pools.a_s.a.exists(name=pool_name, partition=self.partition)
+                effective_monitors = self._effective_monitors(pool, monitors)
+                member_names = self._resolve_member_names(pool)
+
+                known_existing = snapshot is not None and pool_name in snapshot['pools']
+                if snapshot is not None and not known_existing and skip_member_validation:
+                    pl = self._create_pool_inline(
+                        pool_name, pool, fallback_mode, fallback_ip,
+                        effective_monitors, member_names)
+                    if pl is not None:
+                        snapshot['pools'].add(pool_name)
+                        continue
+
+                exist = True if known_existing else self.gtm.pools.a_s.a.exists(
+                    name=pool_name, partition=self.partition)
                 if not exist:
                     log.info('GTM: Creating Pool: {}'.format(pool_name))
                     pool_create_kwargs = {
@@ -90,24 +192,6 @@ class GTMPool:
 
                 # PERF FIX #4: Batch attribute updates into a single .update() call
                 needs_update = False
-
-                # Pool monitor is now config-driven via per-pool poolMonitorRef from Go.
-                monitor_refs = []
-                for monitor in pool.get("monitors", []) or []:
-                    monitor_name = GTMUtils.apply_cluster_prefix(
-                        monitor.get('name'), self._local_cluster_name)
-                    if monitor_name:
-                        monitor_refs.append("/{}/{}".format(self.partition, monitor_name))
-
-                # Backward compatibility for callers still passing precomputed monitors.
-                if not monitor_refs and monitors:
-                    monitor_refs.extend([m.strip() for m in monitors.split(" and ") if m.strip()])
-
-                pool_monitor_ref = pool.get('poolMonitorRef')
-                if pool_monitor_ref and pool_monitor_ref not in monitor_refs:
-                    monitor_refs.append(pool_monitor_ref)
-
-                effective_monitors = " and ".join(monitor_refs)
 
                 if effective_monitors:
                     if getattr(pl, 'monitor', '') != effective_monitors:
@@ -142,50 +226,15 @@ class GTMPool:
                     pl.update()
                     log.debug('GTM: Updated pool {} attributes'.format(pool_name))
 
-                if bool(pool['members']):
-                    pool_dataserver = pool.get('DataServer', '')
-
-                    for member_spec in pool['members']:
-                        if '|' in member_spec:
-                            separator = '|'
-                        else:
-                            separator = ':'
-
-                        parts = member_spec.split(separator)
-
-                        if len(parts) == 3:
-                            dataserver = parts[0]
-                            member_ip = parts[1]
-                            member_port = parts[2]
-                            destination = "{}:{}".format(member_ip, member_port)
-                        elif len(parts) == 2:
-                            if not pool_dataserver:
-                                log.warning("GTM: Member '{}' in pool {} has no DataServer. Skipping.".format(
-                                    member_spec, pool['name']))
-                                continue
-                            dataserver = pool_dataserver
-                            member_ip = parts[0]
-                            member_port = parts[1]
-                            destination = "{}:{}".format(member_ip, member_port)
-                        else:
-                            log.warning("GTM: Unrecognized member format '{}' in pool {}. Using as-is.".format(
-                                member_spec, pool['name']))
-                            self.add_member(
-                                pl, pool_name, member_spec,
-                                skip_validation=skip_member_validation)
-                            continue
-
-                        vs_name = GTMUtils.format_vs_name(
-                            destination, self._local_cluster_name)
-                        server_name = GTMUtils.format_server_name(
-                            dataserver, self._local_cluster_name,
-                            self._cluster_digital_asset_id)
-                        member_name = "{}:{}".format(server_name, vs_name)
-
-                        # PERF FIX #3: Skip validation when infrastructure is already orchestrated
-                        self.add_member(
-                            pl, pool_name, member_name,
-                            skip_validation=skip_member_validation)
+                # Members the snapshot already shows on an existing pool need no POST.
+                existing_members = snapshot['pool_members'].get(pool_name) if known_existing else None
+                for member_name in member_names:
+                    if existing_members and member_name in existing_members:
+                        continue
+                    # PERF FIX #3: Skip validation when infrastructure is already orchestrated
+                    self.add_member(
+                        pl, pool_name, member_name,
+                        skip_validation=skip_member_validation)
         except F5CcclError as e:
             log.error("GTM: Error while creating pool: %s", e)
             raise e
@@ -279,12 +328,16 @@ class GTMPool:
                     return
                 pool_obj = self.gtm.pools.a_s.a.load(name=pool_name, partition=self.partition)
 
-            if pool_obj.members_s.member.exists(name=member_name, partition="Common"):
+            # Load directly and treat 404 as already deleted (saves the exists() GET).
+            try:
                 memObj = pool_obj.members_s.member.load(name=member_name, partition="Common")
-                memObj.delete()
-                log.info("GTM: Member {} deleted from pool {}".format(member_name, pool_name))
-            else:
+            except Exception as load_err:
+                if not GTMUtils.is_not_found_error(load_err):
+                    raise
                 log.debug("GTM: Member {} not found in pool {} (already deleted)".format(member_name, pool_name))
+                return
+            memObj.delete()
+            log.info("GTM: Member {} deleted from pool {}".format(member_name, pool_name))
         except Exception as e:
             log.error("GTM: Error while removing pool member {}: {}".format(member_name, str(e)))
             raise e
@@ -311,6 +364,9 @@ class GTMPool:
                 return
 
             config = working_config
+            # Ownership is determined by UID (digital_asset_id) which is
+            # mandatory and unique per cluster.
+            uid = self._cluster_digital_asset_id
             wideips = config.get(self.partition, {}).get('wideIPs', None)
             if wideips is None:
                 return
@@ -319,52 +375,65 @@ class GTMPool:
                 if wideip_name == wideip['name']:
                     for pool_index, pool in enumerate(wideip['pools']):
                         if pool['name'] == pool_name and pool['members'] is not None:
-                            members_to_remove = list(pool['members'])
-                            pool_dataserver = pool.get('DataServer')
+                            # With a UID every member this cluster created is removed
+                            # below (together with the pool) after one member list, so
+                            # per-member deletes here are only needed in legacy mode.
+                            if not uid:
+                                members_to_remove = list(pool['members'])
+                                pool_dataserver = pool.get('DataServer')
 
-                            # PERF FIX #11: Load pool once for all member removals
-                            pool_obj = None
-                            if self.gtm.pools.a_s.a.exists(name=prefixed_pool_name, partition=self.partition):
-                                pool_obj = self.gtm.pools.a_s.a.load(name=prefixed_pool_name, partition=self.partition)
+                                # PERF FIX #11: Load pool once for all member removals
+                                pool_obj = None
+                                try:
+                                    pool_obj = self.gtm.pools.a_s.a.load(name=prefixed_pool_name, partition=self.partition)
+                                except Exception as load_err:
+                                    if not GTMUtils.is_not_found_error(load_err):
+                                        raise
 
-                            for member in members_to_remove:
-                                member_ref = GTMUtils.convert_member_to_bigip_reference(
-                                    member,
-                                    pool_dataserver,
-                                    local_cluster_name=self._local_cluster_name,
-                                    digital_asset_id=self._cluster_digital_asset_id)
-                                self.remove_member(prefixed_pool_name, member_ref, pool_obj=pool_obj)
+                                for member in members_to_remove:
+                                    member_ref = GTMUtils.convert_member_to_bigip_reference(
+                                        member,
+                                        pool_dataserver,
+                                        local_cluster_name=self._local_cluster_name,
+                                        digital_asset_id=self._cluster_digital_asset_id)
+                                    self.remove_member(prefixed_pool_name, member_ref, pool_obj=pool_obj)
                             config[self.partition]['wideIPs'][index]["pools"][pool_index]['members'] = None
                             break
                     break
 
-            if self.gtm.pools.a_s.a.exists(name=prefixed_pool_name, partition=self.partition):
+            obj = None
+            try:
                 obj = self.gtm.pools.a_s.a.load(name=prefixed_pool_name, partition=self.partition)
+            except Exception as load_err:
+                if not GTMUtils.is_not_found_error(load_err):
+                    raise
+            if obj is not None:
                 remaining_members = obj.members_s.get_collection()
-                if len(remaining_members) > 0:
+
+                # Ownership is determined by the UID in the server name of the member
+                # reference (server_name:vs_name). Server name format:
+                # server_<uid>_<cluster>_<namespace>_<ip>. Use startswith("server_<uid>_")
+                # for precise matching at the uid position. UID is assumed to always be
+                # present — nothing is considered owned if it is empty.
+                def _is_owned(member):
+                    server_name = member.name.split(":")[0] if ":" in member.name else member.name
+                    return bool(uid) and (server_name.startswith("server_" + uid + "_")
+                                          or server_name == "server_" + uid)
+
+                # When every member is ours, deleting the pool removes them too, so the
+                # per-member deletes (and the final member re-list) are skipped.
+                delete_with_members = bool(uid) and all(_is_owned(m) for m in remaining_members)
+
+                if len(remaining_members) > 0 and not delete_with_members:
                     # Remove only members owned by this cluster instance,
                     # preserving members that may belong to other clusters.
-                    # Ownership is determined by cluster_digital_asset_id and
-                    # local_cluster_name encoded in the server name prefix of
-                    # the member reference (server_name:vs_name).
                     log.info("GTM: Pool {} still has {} members on BIG-IP after "
                              "config-based removal, cleaning owned members".format(
                                  prefixed_pool_name, len(remaining_members)))
 
-                    # Ownership is determined by UID (digital_asset_id) which is
-                    # mandatory and unique per cluster.
-                    # Server name format: server_<uid>_<cluster>_<namespace>_<ip>
-                    # Use startswith("server_<uid>_") for precise matching at the
-                    # uid position, rather than a loose substring check.
-                    uid = self._cluster_digital_asset_id
-
                     for member in remaining_members:
                         try:
-                            # Member name format: "server_name:vs_name"
-                            # Server name format: server_<uid>_<cluster>_<namespace>_<ip>
-                            # UID is assumed to always be present — skip deletion if uid is empty.
-                            server_name = member.name.split(":")[0] if ":" in member.name else member.name
-                            if uid and (server_name.startswith("server_" + uid + "_") or server_name == "server_" + uid):
+                            if _is_owned(member):
                                 member.delete()
                                 log.info("GTM: Cleaned up owned member {} from "
                                          "pool {}".format(member.name, prefixed_pool_name))
@@ -390,7 +459,7 @@ class GTMPool:
 
                 # Delete pool if no members remain; if other clusters' members
                 # still exist, only detach from wideIP (done above) and leave pool
-                final_members = obj.members_s.get_collection()
+                final_members = [] if delete_with_members else obj.members_s.get_collection()
                 if len(final_members) == 0:
                     obj.delete()
                     log.info("GTM: Deleted pool {}".format(prefixed_pool_name))
